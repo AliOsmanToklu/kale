@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -16,6 +15,7 @@ from kale.modules.intel import IntelEnrichModule
 from kale.modules.intel.privacy import blocked_reason
 from kale.modules.intel.providers import PROVIDERS, Reputation, Verdict
 from kale.net.cache import TTLCache
+from tests.fakehttp import FakeAPI, Reply, form
 
 PUBLIC_IP = "185.10.20.30"
 SHA256 = "c" * 64
@@ -33,41 +33,6 @@ URLHAUS_URL = "https://urlhaus-api.abuse.ch/v1/url/"
 URLHAUS_HOST = "https://urlhaus-api.abuse.ch/v1/host/"
 BAZAAR = "https://mb-api.abuse.ch/api/v1/"
 VT = "https://www.virustotal.com/api/v3/"
-
-Reply = httpx.Response | Exception
-
-
-class FakeAPI:
-    """Routes requests by URL prefix. A list of replies is served in order; the last
-    one repeats. Unrouted requests fail the test."""
-
-    def __init__(self) -> None:
-        self.routes: dict[str, list[Reply]] = {}
-        self.requests: list[httpx.Request] = []
-
-    def add(self, prefix: str, *replies: Reply) -> None:
-        self.routes[prefix] = list(replies)
-
-    def json(self, prefix: str, data: JsonValue, status: int = 200) -> None:
-        self.add(prefix, httpx.Response(status, json=data))
-
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        url = str(request.url)
-        for prefix, replies in self.routes.items():
-            if url.startswith(prefix):
-                reply = replies.pop(0) if len(replies) > 1 else replies[0]
-                if isinstance(reply, Exception):
-                    raise reply
-                return reply
-        raise AssertionError(f"unexpected request: {request.method} {url}")
-
-    def hits(self, prefix: str) -> list[httpx.Request]:
-        return [r for r in self.requests if str(r.url).startswith(prefix)]
-
-
-def form(request: httpx.Request) -> dict[str, str]:
-    return {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
 
 
 @pytest.fixture

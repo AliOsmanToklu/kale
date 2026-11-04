@@ -35,6 +35,7 @@ from kale.core import (
 from kale.modules.intel.privacy import blocked_reason
 from kale.modules.intel.providers import PROVIDERS, Provider, ProviderError, Reputation, Verdict
 from kale.net.cache import TTLCache, default_cache_dir
+from kale.net.http import USER_AGENT, with_retry
 from kale.net.ratelimit import MinInterval
 
 log = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ class IntelEnrichModule:
         async with httpx.AsyncClient(
             transport=self._transport,
             timeout=ctx.get_float("timeout"),
-            headers={"User-Agent": f"kale/{__version__}"},
+            headers={"User-Agent": USER_AGENT},
         ) as client:
             outcomes = await asyncio.gather(
                 *(
@@ -179,17 +180,11 @@ class IntelEnrichModule:
         self, provider: Provider, client: httpx.AsyncClient, target: Observable, key: str | None
     ) -> Verdict:
         """One retry for transient failures (timeouts, 5xx); quota errors are not retried."""
-        for attempt in (1, 2):
-            await self._limiters[provider.name].wait()
-            try:
-                return await provider.lookup(client, target, key)
-            except ProviderError as exc:
-                if not exc.transient or attempt == 2:
-                    raise
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ProviderError(f"unexpected response format ({type(exc).__name__})") from None
-            await asyncio.sleep(self._retry_delay)
-        raise AssertionError("unreachable")  # pragma: no cover
+        return await with_retry(
+            lambda: provider.lookup(client, target, key),
+            limiter=self._limiters[provider.name],
+            delay=self._retry_delay,
+        )
 
 
 async def _cache_get(cache: TTLCache, namespace: str, key: str) -> Verdict | None:

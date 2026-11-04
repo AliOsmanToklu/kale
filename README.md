@@ -23,6 +23,7 @@ Native modules are part of kale itself:
 |---|---|---|---|
 | `intel.enrich` | Reputation from GreyNoise, AbuseIPDB, URLhaus, MalwareBazaar and VirusTotal | IP, domain, URL, hash | passive |
 | `vuln.intel` | Known vulnerabilities from NVD and OSV, ranked with CISA KEV and EPSS | software, CVE | passive |
+| `surface.discover` | Subdomains from Certificate Transparency logs, dangling CNAMEs, subdomain takeovers | domain | passive |
 
 ## Installation
 
@@ -136,6 +137,31 @@ often resets connections; kale spaces requests out and retries them. `NVD_API_KE
 the limit tenfold. Linux distributions often backport fixes without changing the version
 number, so check the distribution's package before acting on a match.
 
+### Attack surface
+
+`surface.discover` maps a domain's hosts from Certificate Transparency logs (crt.sh and
+CertSpotter) and checks each name in DNS. Nothing is sent to the hosts themselves, so it
+runs without a scope:
+
+```bash
+kale run surface.discover example.com
+kale run surface.discover example.com --set sources=certspotter --set max_names=100
+```
+
+| Finding | Severity |
+|---|---|
+| possible subdomain takeover: a CNAME to a name that does not exist on a service where anyone can claim it (Azure, AWS Elastic Beanstalk) | high |
+| dangling CNAME: the same on any other service | medium |
+| public names that point to private addresses | low |
+| development and admin hosts listed in public certificates (`dev.`, `staging.`, `admin.`, `jenkins.`, ...) | low |
+
+Takeovers are detected from DNS alone (the CNAME target answers NXDOMAIN). Services such as
+S3 or GitHub Pages can only be confirmed with an HTTP request to the host, which would make
+the module active, so they are reported as dangling CNAMEs at most. crt.sh is complete but
+slow (a minute for a mid-sized domain); CertSpotter is fast but allows about ten requests an
+hour without a key (`CERTSPOTTER_API_KEY`), so only its first pages are read. Resolving
+hosts and their public addresses become observables for other modules.
+
 ## Result format
 
 Every run produces a `ModuleResult` ([schema](schemas/result.v1.json)):
@@ -223,10 +249,11 @@ src/kale/
 │   ├── engine.py    # guards, timeout, error isolation
 │   └── scope.py     # authorization scope for active modules
 ├── modules/         # built-in modules and adapters
-│   ├── intel/       # intel.enrich: sources, privacy guard, verdict aggregation
+│   ├── intel/       # intel.enrich: sources and verdict aggregation
+│   ├── surface/     # surface.discover: CT sources, DNS checks, takeover rules
 │   └── vuln/        # vuln.intel: CPE/purl mapping, NVD, OSV, KEV, EPSS, priority
 ├── net/             # shared by modules that call services: HTTP errors and retries,
-│                    # rate limiter, TTL cache
+│                    # DNS lookups, privacy guard, rate limiter, TTL cache
 ├── report.py        # text (terminal-safe) and JSON renderers
 └── cli.py           # thin command line layer
 ```
@@ -238,16 +265,15 @@ ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=9
 ```
 
 Tests never touch the network: the Kalkan adapter is tested against a fake scanner and
-`intel.enrich` and `vuln.intel` against a fake HTTP layer shaped like the real services.
+`intel.enrich`, `vuln.intel` and `surface.discover` against a fake HTTP layer shaped like
+the real services (and a fake resolver).
 
 ## Roadmap
 
 1. **Core** (done): contract, registry, engine, scope, CLI, adapters for all three tools
    (`logs.auth`, `malware.static`, `web.scan`) and CI that tests them together.
-2. **New modules** (in progress): `intel.enrich` (done), `vuln.intel` (done),
-   `surface.discover` (subdomains from Certificate
-   Transparency, subdomain takeover). Then `kale investigate`, which feeds each module's
-   observables to the next.
+2. **New modules** (in progress): `intel.enrich`, `vuln.intel` and `surface.discover`
+   (done). Then `kale investigate`, which feeds each module's observables to the next.
 3. **Interfaces**: FastAPI service with a job queue, HTML/PDF reports, web UI.
 4. **Depth**: YARA, Sigma rules, EVTX, SARIF and STIX export, MITRE ATT&CK mapping.
 

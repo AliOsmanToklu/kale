@@ -1,6 +1,7 @@
-"""``kale`` command line: ``modules``, ``run`` and ``schema``.
+"""``kale`` command line: ``modules``, ``run``, ``investigate`` and ``schema``.
 
-Exit codes: 0 done, 1 a finding reached ``--fail-on``, 2 usage error, 3 the module failed.
+Exit codes: 0 done, 1 a finding reached ``--fail-on``, 2 usage error, 3 the module (or, for
+``investigate``, every module) failed.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from pydantic import ValidationError
 from kale import __version__
 from kale.core import (
     ErrorCode,
+    Investigation,
     KaleError,
     Kind,
     Module,
@@ -30,9 +32,16 @@ from kale.core import (
     Scope,
     Severity,
     UnknownModuleError,
+    investigate,
     run_module,
 )
-from kale.report import render_json, render_text
+from kale.core.pipeline import MAX_DEPTH
+from kale.report import (
+    render_investigation_json,
+    render_investigation_text,
+    render_json,
+    render_text,
+)
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -54,6 +63,36 @@ def _key_value(text: str) -> tuple[str, str]:
     if not sep or not key.strip():
         raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {text!r}")
     return key.strip(), value
+
+
+def _add_shared(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        metavar="ENTRY",
+        help="domain or CIDR you are authorized to test (repeatable)",
+    )
+    parser.add_argument("--scope-file", type=Path, help="file with one scope entry per line")
+    parser.add_argument(
+        "--allow-private",
+        action="store_true",
+        help="let active modules reach private/internal addresses in scope",
+    )
+    parser.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    parser.add_argument("-o", "--output", type=Path, help="write the report to this file")
+    parser.add_argument(
+        "--fail-on",
+        choices=[s.value for s in Severity if s is not Severity.INFO],
+        help="exit with 1 if a finding is at least this severe (for CI)",
+    )
+    env_lang = os.environ.get("KALE_LANG", "")
+    parser.add_argument(
+        "--lang",
+        choices=LANGUAGES,
+        default=env_lang if env_lang in LANGUAGES else "en",
+        help="language of module texts, where the module supports it (default: KALE_LANG or en)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,35 +126,46 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="module option (repeatable; see 'kale modules NAME')",
     )
-    p_run.add_argument(
-        "--scope",
-        action="append",
-        default=[],
-        metavar="ENTRY",
-        help="domain or CIDR you are authorized to test (repeatable)",
-    )
-    p_run.add_argument("--scope-file", type=Path, help="file with one scope entry per line")
-    p_run.add_argument(
-        "--allow-private",
-        action="store_true",
-        help="let active modules reach private/internal addresses in scope",
-    )
-    p_run.add_argument("-f", "--format", choices=("text", "json"), default="text")
-    p_run.add_argument("-o", "--output", type=Path, help="write the report to this file")
-    p_run.add_argument(
-        "--fail-on",
-        choices=[s.value for s in Severity if s is not Severity.INFO],
-        help="exit with 1 if a finding is at least this severe (for CI)",
-    )
-    env_lang = os.environ.get("KALE_LANG", "")
-    p_run.add_argument(
-        "--lang",
-        choices=LANGUAGES,
-        default=env_lang if env_lang in LANGUAGES else "en",
-        help="language of module texts, where the module supports it (default: KALE_LANG or en)",
-    )
+    _add_shared(p_run)
 
-    sub.add_parser("schema", help="print the JSON schema of module results")
+    p_inv = sub.add_parser(
+        "investigate",
+        help="run every applicable module, then follow what they find",
+        description=(
+            "Run every module that accepts the target, then every module that accepts what "
+            "those found, up to --depth hops. Active modules only run on values inside "
+            "--scope; everything else they could have touched is listed as skipped."
+        ),
+    )
+    p_inv.add_argument("target", help="file, domain, URL, IP, hash, software, CVE, ...")
+    p_inv.add_argument("--kind", choices=[k.value for k in Kind], help="type of the target")
+    p_inv.add_argument(
+        "--depth",
+        type=int,
+        choices=range(MAX_DEPTH + 1),
+        default=2,
+        metavar=f"0-{MAX_DEPTH}",
+        help="hops to follow from the target (default: 2)",
+    )
+    p_inv.add_argument("--modules", help="comma-separated modules to use (default: all)")
+    p_inv.add_argument(
+        "--max-runs", type=int, default=50, help="stop after this many module runs (default: 50)"
+    )
+    p_inv.add_argument(
+        "--set",
+        dest="options",
+        action="append",
+        type=_key_value,
+        default=[],
+        metavar="MODULE.OPTION=VALUE",
+        help="module option, e.g. vuln.intel.max_findings=3 (repeatable)",
+    )
+    _add_shared(p_inv)
+
+    p_schema = sub.add_parser("schema", help="print the JSON schema of results")
+    p_schema.add_argument(
+        "--investigation", action="store_true", help="the schema of investigations instead"
+    )
     return parser
 
 
@@ -219,13 +269,7 @@ def cmd_run(registry: Registry, args: argparse.Namespace) -> int:
         run_module(module, target, options=dict(args.options), scope=_scope(args), lang=args.lang)
     )
     report = render_json(result) if args.format == "json" else render_text(result)
-    if args.output:
-        try:
-            args.output.write_text(report, encoding="utf-8")
-        except OSError as exc:
-            raise UsageError(f"cannot write {args.output}: {exc.strerror or exc}") from None
-    else:
-        sys.stdout.write(report)
+    _write(report, args.output)
     if result.error and (args.output or args.format == "json"):
         print(f"kale: {result.module}: {result.error.message}", file=sys.stderr)
     if result.error and result.error.code is ErrorCode.OUT_OF_SCOPE and not args.scope:
@@ -234,6 +278,72 @@ def cmd_run(registry: Registry, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     return _exit_code(result, args.fail_on)
+
+
+def _module_options(pairs: Sequence[tuple[str, str]]) -> dict[str, dict[str, str]]:
+    options: dict[str, dict[str, str]] = {}
+    for key, value in pairs:
+        module, _, option = key.rpartition(".")
+        if "." not in module or not option:
+            raise UsageError(
+                f"expected MODULE.OPTION=VALUE (e.g. vuln.intel.max_findings=3), got {key!r}"
+            )
+        options.setdefault(module, {})[option] = value
+    return options
+
+
+def cmd_investigate(registry: Registry, args: argparse.Namespace) -> int:
+    accepts = frozenset(kind for module in registry.modules for kind in module.spec.accepts)
+    kind = Kind(args.kind) if args.kind else None
+    target = guess_target(args.target, accepts, kind)
+    modules = {n.strip() for n in args.modules.split(",") if n.strip()} if args.modules else None
+    scope = _scope(args)
+    try:
+        result = asyncio.run(
+            investigate(
+                registry,
+                target,
+                depth=args.depth,
+                scope=scope,
+                modules=modules,
+                options=_module_options(args.options),
+                max_runs=args.max_runs,
+                lang=args.lang,
+            )
+        )
+    except KaleError as exc:
+        raise UsageError(str(exc)) from None
+    if args.format == "json":
+        report = render_investigation_json(result)
+    else:
+        report = render_investigation_text(result)
+    _write(report, args.output)
+    if result.skipped and scope is None:
+        print(
+            f"kale: {len(result.skipped)} active run(s) skipped: add --scope with the targets "
+            "you are authorized to test to allow them",
+            file=sys.stderr,
+        )
+    return _investigation_exit_code(result, args.fail_on)
+
+
+def _write(report: str, output: Path | None) -> None:
+    if output:
+        try:
+            output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            raise UsageError(f"cannot write {output}: {exc.strerror or exc}") from None
+    else:
+        sys.stdout.write(report)
+
+
+def _investigation_exit_code(result: Investigation, fail_on: str | None) -> int:
+    if result.runs and not any(run.ok for run in result.runs):
+        return EXIT_MODULE_ERROR
+    worst = result.worst_severity()
+    if fail_on and worst is not None and worst.at_least(Severity(fail_on)):
+        return EXIT_FINDINGS
+    return EXIT_OK
 
 
 def _host_hint(target: Observable) -> str:
@@ -272,11 +382,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         if args.command == "schema":
-            print(json.dumps(ModuleResult.model_json_schema(), indent=2))
+            model = Investigation if args.investigation else ModuleResult
+            print(json.dumps(model.model_json_schema(), indent=2))
             return EXIT_OK
         registry = Registry.discover()
         if args.command == "modules":
             return cmd_modules(registry, args.name)
+        if args.command == "investigate":
+            return cmd_investigate(registry, args)
         return cmd_run(registry, args)
     except UsageError as exc:
         print(f"kale: error: {exc}", file=sys.stderr)

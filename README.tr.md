@@ -55,6 +55,7 @@ kale run logs.auth auth.log --set threshold=5 --set window=120
 kale run web.scan example.com --scope example.com --lang tr
 kale run logs.auth auth.log --fail-on high    # yüksek/acil bulgu varsa 1 ile çık (CI)
 kale schema                                   # sonuç biçiminin JSON şeması
+kale schema --investigation                   # ... ve incelemelerin şeması
 ```
 
 Hedefin türü biçiminden tahmin edilir (var olan bir yol dosyadır, `https://...` bir URL'dir
@@ -62,6 +63,27 @@ vb.); `--kind` bu tahmini geçersiz kılar.
 
 Çıkış kodları: `0` tamamlandı, `1` bir bulgu `--fail-on` eşiğine ulaştı, `2` kullanım hatası,
 `3` modül çalışamadı (nedeni raporda yazar).
+
+### İncelemeler
+
+`kale investigate`, hedefi kabul eden her modülü çalıştırır; ardından bu modüllerin
+bulduklarını kabul eden her modülü, ve bu `--depth` adım boyunca sürer (varsayılan 2).
+Bir değeri kaç modül bulmuş olursa olsun, her değer bir kez analiz edilir:
+
+```bash
+kale investigate /var/log/auth.log --depth 1          # saldırgan IP'leri -> itibar
+kale investigate ornek.exe                            # hash, URL, IP -> itibar
+kale investigate example.com --scope example.com      # alt alan adları -> web taraması -> CVE
+kale investigate example.com --modules surface.discover,intel.enrich
+kale investigate example.com --set vuln.intel.max_findings=3 -f json -o rapor.json
+```
+
+Aktif modüller yalnızca kapsam (scope) içindeki değerleri görür. Başka bir modülün bulduğu
+bir değer (zararlı yazılımdaki bir komuta-kontrol adresi, CT kayıtlarındaki bir alt alan
+adı gibi) sırf ortaya çıktığı için taranmaz; o çalıştırma "atlandı" olarak listelenir.
+`--max-runs` (varsayılan 50) modül çalıştırma sayısını sınırlar ve rapor erken durduğunda
+bunu belirtir. Metin raporu bütün bulguları en kötüden başlayarak, geldiği modül ve değerle
+birlikte listeler; JSON raporu `schemas/investigation.v1.json` şemasına uyar.
 
 ### Yetki ve kapsam (scope)
 
@@ -202,8 +224,8 @@ Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.en
 
 1. **Çekirdek** (tamamlandı): sözleşme, registry, motor, kapsam, CLI, üç aracın adaptörleri
    (`logs.auth`, `malware.static`, `web.scan`) ve hepsini birlikte test eden CI.
-2. **Yeni modüller** (sürüyor): `intel.enrich`, `vuln.intel` ve `surface.discover`
-   (tamamlandı). Ardından her modülün gözlemlenebilirlerini bir sonrakine aktaran
+2. **Yeni modüller ve pipeline** (tamamlandı): `intel.enrich`, `vuln.intel`,
+   `surface.discover` ve her modülün gözlemlenebilirlerini bir sonrakine aktaran
    `kale investigate`.
 3. **Arayüzler**: iş kuyruklu FastAPI servisi, HTML/PDF raporlar, web arayüzü.
 4. **Derinlik**: YARA, Sigma kuralları, EVTX, SARIF ve STIX dışa aktarma, MITRE ATT&CK eşlemesi.

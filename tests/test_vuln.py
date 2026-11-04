@@ -410,3 +410,23 @@ def test_default_module_uses_the_user_cache_dir(
     cache = VulnIntelModule()._cache_for(3600)
     assert cache is not None and cache.path == tmp_path / "cache.sqlite3"
     assert VulnIntelModule()._cache_for(0) is None
+
+
+async def test_rate_limits_hold_across_runs(api: FakeAPI, monkeypatch: pytest.MonkeyPatch) -> None:
+    """kale investigate runs the module many times: the NVD limiter must be the same one."""
+    seen: list[object] = []
+    original = sources.Sources.__init__
+
+    def record(self: sources.Sources, *args: Any, **kwargs: Any) -> None:
+        seen.append(kwargs["limiters"]["nvd"])
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(sources.Sources, "__init__", record)
+    api.json(NVD, nvd_page())
+    module = VulnIntelModule(
+        transport=httpx.MockTransport(api.handle), intervals=NO_WAIT, retry_delay=0
+    )
+    for _ in range(2):
+        target = Observable(kind=Kind.SOFTWARE, value="proftpd@1.3.8")
+        await run_module(module, target, options={"cache_hours": "0"}, environ={})
+    assert len(seen) == 2 and seen[0] is seen[1]

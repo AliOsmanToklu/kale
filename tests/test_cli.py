@@ -234,3 +234,86 @@ def test_guess_target_falls_back_to_software() -> None:
 def test_guess_target_gives_up_on_nonsense() -> None:
     with pytest.raises(UsageError, match="pass --kind"):
         cli.guess_target("not a thing", frozenset({Kind.IP, Kind.HASH}))
+
+
+@pytest.fixture
+def fake_registry(monkeypatch: pytest.MonkeyPatch) -> Registry:
+    from tests.test_pipeline import Discover, Reputation, Scanner
+
+    Discover.calls.clear()
+    Scanner.seen.clear()
+    registry = Registry([Discover(), Reputation(), Scanner()])
+    monkeypatch.setattr(Registry, "discover", classmethod(lambda cls: registry))
+    return registry
+
+
+def test_investigate_text(capsys: pytest.CaptureFixture[str], fake_registry: Registry) -> None:
+    code, out, err = run(capsys, "investigate", "example.com", "--depth", "1")
+    assert code == EXIT_OK
+    assert out.startswith("kale investigate | domain:example.com | depth 1 | ")
+    assert "active run(s) skipped: add --scope" in err
+
+
+def test_investigate_json_scope_and_options(
+    capsys: pytest.CaptureFixture[str], fake_registry: Registry, tmp_path: Path
+) -> None:
+    report = tmp_path / "investigation.json"
+    code, out, err = run(
+        capsys,
+        "investigate",
+        "example.com",
+        "--scope",
+        "example.com",
+        "--set",
+        "fake.discover.extra=api.example.com",
+        "-f",
+        "json",
+        "-o",
+        str(report),
+    )
+    assert code == EXIT_OK
+    assert out == "" and "skipped" not in err
+    data = json.loads(report.read_text(encoding="utf-8"))
+    targets = {(r["module"], r["target"]["value"]) for r in data["runs"]}
+    assert ("fake.scanner", "example.com") in targets
+    assert ("fake.discover", "api.example.com") in targets
+
+
+def test_investigate_fail_on(capsys: pytest.CaptureFixture[str], fake_registry: Registry) -> None:
+    assert run(capsys, "investigate", "example.com", "--fail-on", "high")[0] == EXIT_FINDINGS
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--set", "extra=x"], "expected MODULE.OPTION=VALUE"),
+        (["--set", "fake.discover.colour=red"], "unknown option"),
+        (["--modules", "fake.typo"], "unknown module"),
+    ],
+)
+def test_investigate_usage_errors(
+    capsys: pytest.CaptureFixture[str], fake_registry: Registry, args: list[str], message: str
+) -> None:
+    code, _, err = run(capsys, "investigate", "example.com", *args)
+    assert code == EXIT_USAGE
+    assert message in err
+
+
+def test_investigate_where_every_run_fails(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.fakes import CrashModule
+
+    registry = Registry([CrashModule()])
+    monkeypatch.setattr(Registry, "discover", classmethod(lambda cls: registry))
+    code, out, _ = run(capsys, "investigate", "example.com")
+    assert code == EXIT_MODULE_ERROR
+    assert "failed (failed): RuntimeError: boom" in out
+
+
+def test_schema_for_investigations(capsys: pytest.CaptureFixture[str]) -> None:
+    from kale.core import Investigation
+
+    code, out, _ = run(capsys, "schema", "--investigation")
+    assert code == EXIT_OK
+    assert json.loads(out) == Investigation.model_json_schema()

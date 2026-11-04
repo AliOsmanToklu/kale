@@ -204,3 +204,46 @@ class ModuleResult(_Model):
 
     def worst_severity(self) -> Severity | None:
         return min((f.severity for f in self.findings), key=lambda s: s.rank, default=None)
+
+
+INVESTIGATION_SCHEMA_VERSION = "1"
+
+
+class Skipped(_Model):
+    """A module that could have run on an observable but was not allowed to."""
+
+    module: str
+    target: Observable
+    reason: str
+
+
+class Investigation(_Model):
+    """``kale investigate``: every module run, starting from one target."""
+
+    schema_version: str = INVESTIGATION_SCHEMA_VERSION
+    target: Observable
+    depth: int
+    started_at: datetime
+    finished_at: datetime
+    runs: tuple[ModuleResult, ...] = ()
+    skipped: tuple[Skipped, ...] = ()
+    truncated: bool = False  # the run budget ran out before every observable was followed
+
+    @property
+    def duration(self) -> float:
+        return (self.finished_at - self.started_at).total_seconds()
+
+    def findings(self) -> list[tuple[ModuleResult, Finding]]:
+        """All findings, worst first; runs keep their order within a severity."""
+        pairs = [(run, finding) for run in self.runs for finding in run.findings]
+        return sorted(pairs, key=lambda pair: pair[1].severity.rank)
+
+    def count(self, severity: Severity) -> int:
+        return sum(run.count(severity) for run in self.runs)
+
+    def worst_severity(self) -> Severity | None:
+        return min(
+            (f.severity for run in self.runs for f in run.findings),
+            key=lambda s: s.rank,
+            default=None,
+        )

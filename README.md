@@ -55,6 +55,7 @@ kale run logs.auth auth.log --set threshold=5 --set window=120
 kale run web.scan example.com --scope example.com --lang tr
 kale run logs.auth auth.log --fail-on high    # exit 1 if a high or critical finding (CI)
 kale schema                                   # JSON schema of the result format
+kale schema --investigation                   # ... and of investigations
 ```
 
 The target's kind is guessed from its form (an existing path is a file, `https://...` a URL,
@@ -62,6 +63,27 @@ and so on); `--kind` overrides the guess.
 
 Exit codes: `0` done, `1` a finding reached `--fail-on`, `2` usage error, `3` the module
 could not run (the report says why).
+
+### Investigations
+
+`kale investigate` runs every module that accepts the target, then every module that
+accepts what those found, and so on for `--depth` hops (default 2). Each value is analyzed
+once, however many modules mention it:
+
+```bash
+kale investigate /var/log/auth.log --depth 1          # attacker IPs -> reputation
+kale investigate sample.exe                           # hash, URLs, IPs -> reputation
+kale investigate example.com --scope example.com      # subdomains -> web scan -> CVEs
+kale investigate example.com --modules surface.discover,intel.enrich
+kale investigate example.com --set vuln.intel.max_findings=3 -f json -o report.json
+```
+
+Active modules only ever see values inside the scope. A value another module discovered,
+such as a command-and-control address in a malware sample or a subdomain in CT logs, is
+never scanned just because it came up; the run is listed as skipped instead. `--max-runs`
+(default 50) caps the number of module runs, and the report says when it stopped early.
+The text report lists every finding, worst first, with the module and value it came from;
+the JSON report follows `schemas/investigation.v1.json`.
 
 ### Authorization and scope
 
@@ -247,6 +269,7 @@ src/kale/
 │   ├── module.py    # ModuleSpec, Option, RunContext, Module protocol
 │   ├── registry.py  # entry-point discovery with an allowlist
 │   ├── engine.py    # guards, timeout, error isolation
+│   ├── pipeline.py  # kale investigate: breadth-first walk, scope rule, run budget
 │   └── scope.py     # authorization scope for active modules
 ├── modules/         # built-in modules and adapters
 │   ├── intel/       # intel.enrich: sources and verdict aggregation
@@ -272,8 +295,9 @@ the real services (and a fake resolver).
 
 1. **Core** (done): contract, registry, engine, scope, CLI, adapters for all three tools
    (`logs.auth`, `malware.static`, `web.scan`) and CI that tests them together.
-2. **New modules** (in progress): `intel.enrich`, `vuln.intel` and `surface.discover`
-   (done). Then `kale investigate`, which feeds each module's observables to the next.
+2. **New modules and pipeline** (done): `intel.enrich`, `vuln.intel`,
+   `surface.discover`, and `kale investigate`, which feeds each module's observables to
+   the next.
 3. **Interfaces**: FastAPI service with a job queue, HTML/PDF reports, web UI.
 4. **Depth**: YARA, Sigma rules, EVTX, SARIF and STIX export, MITRE ATT&CK mapping.
 

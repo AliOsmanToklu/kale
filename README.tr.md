@@ -23,6 +23,7 @@ Yerleşik modüller doğrudan kale'nin parçasıdır:
 | Modül | Ne yapar | Girdi | Tür |
 |---|---|---|---|
 | `intel.enrich` | GreyNoise, AbuseIPDB, URLhaus, MalwareBazaar ve VirusTotal'dan itibar bilgisi | IP, alan adı, URL, hash | pasif |
+| `vuln.intel` | NVD ve OSV'den bilinen açıklar; CISA KEV ve EPSS ile önceliklendirilir | yazılım, CVE | pasif |
 
 ## Kurulum
 
@@ -106,13 +107,45 @@ sorgulanır; URL'ler de taramaya gönderilmez. Cevaplar 24 saat önbellekte tutu
 (`--set cache_hours=0` önbelleği kapatır, `KALE_CACHE_DIR` yerini değiştirir); böylece
 incelemeler ücretsiz kotaları tüketmez.
 
+### Zafiyetler
+
+`vuln.intel`, bir yazılım sürümünün bilinen açıklarını ya da tek bir CVE'nin ayrıntılarını,
+savunanın ele alması gereken sırayla listeler:
+
+```bash
+kale run vuln.intel nginx@1.18.0                        # Kalkan'ın tanıdığı bir ürün
+kale run vuln.intel "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"
+kale run vuln.intel pkg:npm/lodash@4.17.20             # herhangi bir paket URL'si
+kale run vuln.intel CVE-2021-44228
+```
+
+Sunucu yazılımları CPE adıyla NVD'ye sorulur (bazı ürünler iki üretici adıyla kayıtlıdır,
+örneğin `f5:nginx` ve `nginx:nginx`; ikisi de sorulur). JavaScript kütüphaneleri ve paket
+URL'leri, GitHub advisory'leriyle onları daha iyi kapsayan OSV'ye gider. Her açık bir
+öncelik alır; bulgunun önem derecesi budur:
+
+| Öncelik | Ne zaman |
+|---|---|
+| critical | CISA'nın Known Exploited Vulnerabilities kataloğunda: gerçek saldırılarda kullanılıyor |
+| high | EPSS %10 veya üstü (30 gün içinde sömürülmesi olası) ya da CVSS 9 veya üstü |
+| medium | CVSS 7 veya üstü |
+| low | geri kalan her şey |
+
+CVSS bir saldırının ne kadar kötü olacağını söyler, ne kadar olası olduğunu değil; bu
+yüzden CVSS 9.8 bir açık tek başına kritik sayılmaz. NVD anahtarsız da çalışır ama 30
+saniyede yalnızca 5 isteğe izin verir ve bağlantıları sık sık keser; kale istekleri aralıklı
+gönderir ve yeniden dener. `NVD_API_KEY` bu sınırı on katına çıkarır. Linux dağıtımları
+güvenlik düzeltmelerini sürüm numarasını değiştirmeden geri taşıyabilir; bir eşleşmeye göre
+harekete geçmeden önce dağıtımın paketini kontrol edin.
+
 ## Sonuç biçimi
 
 Her çalıştırma bir `ModuleResult` üretir ([şema](schemas/result.v1.json)). Alanların
 açıklaması ve örnek JSON için [İngilizce README](README.md#result-format)'ye bakın.
 
 - `rule_id` sürümler arasında sabittir; bulgular takip edilebilir, bastırılabilir, karşılaştırılabilir.
-- `severity`: `critical`, `high`, `medium`, `low`, `info`.
+- `severity`: `critical`, `high`, `medium`, `low`, `info`. Bulgular en kötüden başlar;
+  aynı önem derecesinde, modülün belirlediği sırada kalır.
 - `observables` başka modüllerin girdi olarak kullanabileceği bilgilerdir (itibar sorgusu
   için saldırgan IP, CVE sorgusu için yazılım sürümü).
 - Hatalar çalıştırmayı düşürmez: `error` alanında bir kodla görünür (`invalid_input`,
@@ -135,15 +168,15 @@ bakın. `tests/test_contract.py` her kayıtlı modülü kurallara karşı otomat
 ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=90
 ```
 
-Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.enrich` sahte bir
-HTTP katmanıyla test edilir.
+Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.enrich` ve
+`vuln.intel` gerçek servisleri taklit eden sahte bir HTTP katmanıyla test edilir.
 
 ## Yol haritası
 
 1. **Çekirdek** (tamamlandı): sözleşme, registry, motor, kapsam, CLI, üç aracın adaptörleri
    (`logs.auth`, `malware.static`, `web.scan`) ve hepsini birlikte test eden CI.
-2. **Yeni modüller** (sürüyor): `intel.enrich` (tamamlandı), `vuln.intel` (OSV/NVD'den
-   CVE'ler, CISA KEV ve EPSS ile önceliklendirme), `surface.discover` (Certificate
+2. **Yeni modüller** (sürüyor): `intel.enrich` (tamamlandı), `vuln.intel` (tamamlandı),
+   `surface.discover` (Certificate
    Transparency'den alt alan adları, subdomain takeover). Ardından her modülün
    gözlemlenebilirlerini bir sonrakine aktaran `kale investigate`.
 3. **Arayüzler**: iş kuyruklu FastAPI servisi, HTML/PDF raporlar, web arayüzü.

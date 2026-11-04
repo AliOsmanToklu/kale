@@ -20,6 +20,9 @@ import httpx
 from pydantic import JsonValue
 
 from kale.core import Kind, Observable
+from kale.net.http import ServiceError, check_status, json_object, send
+
+ProviderError = ServiceError  # what a source raises when it cannot answer
 
 MAX_RELATED = 10  # payload hashes taken from one URLhaus answer
 
@@ -33,12 +36,6 @@ class Reputation(enum.StrEnum):
     @property
     def rank(self) -> int:
         return list(Reputation).index(self)
-
-
-class ProviderError(Exception):
-    def __init__(self, message: str, *, transient: bool = False) -> None:
-        super().__init__(message)
-        self.transient = transient  # worth one retry: timeouts, 5xx
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,34 +81,6 @@ class Provider(abc.ABC):
     async def lookup(
         self, client: httpx.AsyncClient, target: Observable, key: str | None
     ) -> Verdict: ...
-
-
-async def send(client: httpx.AsyncClient, method: str, url: str, **kwargs: Any) -> httpx.Response:
-    try:
-        return await client.request(method, url, **kwargs)
-    except httpx.TimeoutException:
-        raise ProviderError("timed out", transient=True) from None
-    except httpx.HTTPError as exc:
-        raise ProviderError(f"connection failed ({type(exc).__name__})", transient=True) from None
-
-
-def check_status(response: httpx.Response) -> None:
-    code = response.status_code
-    if code in (401, 403):
-        raise ProviderError(f"API key rejected (HTTP {code})")
-    if code == 429:
-        raise ProviderError("rate limit or quota reached (HTTP 429)")
-    if code >= 500:
-        raise ProviderError(f"service error (HTTP {code})", transient=True)
-    if not 200 <= code < 300:
-        raise ProviderError(f"unexpected HTTP {code}")
-
-
-def json_object(response: httpx.Response) -> dict[str, Any]:
-    data = response.json()  # ValueError on invalid JSON: reported as a bad response
-    if not isinstance(data, dict):
-        raise ProviderError("unexpected response format")
-    return data
 
 
 def _is_ipv4(target: Observable) -> bool:

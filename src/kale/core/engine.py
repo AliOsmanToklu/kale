@@ -61,7 +61,8 @@ async def run_module(
     findings = tuple(
         sorted(
             (_stamp_finding(f, spec.name) for f in output.findings),
-            key=lambda f: (f.severity.rank, f.rule_id),
+            # stable: within one severity the module's own order (e.g. by EPSS) is kept
+            key=lambda f: f.severity.rank,
         )
     )
     discovered = [*output.observables, *(o for f in findings for o in f.observables)]

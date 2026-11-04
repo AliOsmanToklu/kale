@@ -44,6 +44,7 @@ kale = "kale.cli:main"
 "logs.auth" = "kale.modules.auth_logs:AuthLogModule"
 "intel.enrich" = "kale.modules.intel:IntelEnrichModule"
 "malware.static" = "kale.modules.static_malware:StaticMalwareModule"
+"vuln.intel" = "kale.modules.vuln:VulnIntelModule"
 "web.scan" = "kale.modules.web_scan:WebScanModule"
 
 [tool.setuptools.dynamic]

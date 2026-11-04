@@ -100,6 +100,7 @@ class ModuleSpec:
     accepts: frozenset[Kind]
     active: bool = False  # sends traffic to the target: only runs inside a scope
     secrets: frozenset[str] = frozenset()  # environment variables the module needs
+    optional_secrets: frozenset[str] = frozenset()  # used when set, e.g. per-source API keys
     options: Mapping[str, Option] = field(default_factory=dict)
     timeout: float = 120.0
 

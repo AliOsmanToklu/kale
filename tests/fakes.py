@@ -157,3 +157,12 @@ class Exploding:
 
 
 echo_instance = EchoModule()
+
+
+class OptionalSecretModule:
+    spec: ClassVar[ModuleSpec] = make_spec(
+        "fake.optional_secret", optional_secrets=frozenset({"FAKE_OPTIONAL_KEY"})
+    )
+
+    async def run(self, target: Observable, ctx: RunContext) -> ModuleOutput:
+        return ModuleOutput(summary={"keys": sorted(ctx.secrets)})

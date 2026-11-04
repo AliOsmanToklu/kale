@@ -184,6 +184,8 @@ def cmd_modules(registry: Registry, name: str | None) -> int:
         print(f"  timeout: {spec.timeout:g} s")
         if spec.secrets:
             print(f"  secrets: {', '.join(sorted(spec.secrets))}")
+        if spec.optional_secrets:
+            print(f"  optional secrets: {', '.join(sorted(spec.optional_secrets))}")
         if spec.options:
             print("  options (--set KEY=VALUE):")
             width = max(len(n) for n in spec.options)

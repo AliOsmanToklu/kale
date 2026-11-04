@@ -25,7 +25,12 @@ def test_modules_list(capsys: pytest.CaptureFixture[str]) -> None:
     code, out, _ = run(capsys, "modules")
     assert code == EXIT_OK
     rows = {line.split()[0]: line.split()[1] for line in out.splitlines() if line.strip()}
-    assert rows == {"logs.auth": "passive", "malware.static": "passive", "web.scan": "active"}
+    assert rows == {
+        "intel.enrich": "passive",
+        "logs.auth": "passive",
+        "malware.static": "passive",
+        "web.scan": "active",
+    }
 
 
 def test_modules_describe(capsys: pytest.CaptureFixture[str]) -> None:

@@ -29,6 +29,7 @@ def test_modules_list(capsys: pytest.CaptureFixture[str]) -> None:
         "intel.enrich": "passive",
         "logs.auth": "passive",
         "malware.static": "passive",
+        "surface.discover": "passive",
         "vuln.intel": "passive",
         "web.scan": "active",
     }

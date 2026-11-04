@@ -1,4 +1,4 @@
-"""What never leaves the machine.
+"""What never leaves the machine (shared by every module that asks third parties).
 
 Looking a value up in a threat intelligence service discloses it to that service. Private
 addresses and internal host names reveal the user's network, and a URL with credentials

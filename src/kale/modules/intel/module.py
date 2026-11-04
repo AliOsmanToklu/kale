@@ -32,10 +32,10 @@ from kale.core import (
     RunContext,
     Severity,
 )
-from kale.modules.intel.privacy import blocked_reason
 from kale.modules.intel.providers import PROVIDERS, Provider, ProviderError, Reputation, Verdict
 from kale.net.cache import TTLCache, default_cache_dir
 from kale.net.http import USER_AGENT, with_retry
+from kale.net.privacy import blocked_reason
 from kale.net.ratelimit import MinInterval
 
 log = logging.getLogger(__name__)

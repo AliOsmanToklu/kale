@@ -12,9 +12,9 @@ from pydantic import JsonValue
 from kale import __version__
 from kale.core import ErrorCode, Kind, ModuleResult, Observable, Severity, run_module
 from kale.modules.intel import IntelEnrichModule
-from kale.modules.intel.privacy import blocked_reason
 from kale.modules.intel.providers import PROVIDERS, Reputation, Verdict
 from kale.net.cache import TTLCache
+from kale.net.privacy import blocked_reason
 from tests.fakehttp import FakeAPI, Reply, form
 
 PUBLIC_IP = "185.10.20.30"

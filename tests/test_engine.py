@@ -33,9 +33,10 @@ async def test_observables_are_deduplicated_stamped_and_exclude_the_target() -> 
     assert all(o.source == "fake.echo" for f in result.findings for o in f.observables)
 
 
-async def test_findings_are_sorted_worst_first_then_by_rule() -> None:
+async def test_findings_are_sorted_worst_first_keeping_module_order() -> None:
     result = await run_module(fakes.MixedModule(), TARGET)
-    assert [f.rule_id for f in result.findings] == ["fake.mixed.c", "fake.mixed.a", "fake.mixed.b"]
+    # b and a share a severity: they stay in the order the module chose
+    assert [f.rule_id for f in result.findings] == ["fake.mixed.c", "fake.mixed.b", "fake.mixed.a"]
     assert result.worst_severity() is Severity.CRITICAL
 
 

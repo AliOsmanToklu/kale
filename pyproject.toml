@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kale"
+dynamic = ["version"]
+description = "Modular security toolkit: one CLI and one result format for web scanning, log analysis, malware triage and threat intelligence"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ali Osman Toklu" }]
+requires-python = ">=3.12"
+# The core stays small on purpose. Tools that modules wrap (kalkan, log-analyzer, ...)
+# are installed separately; a module whose tool is missing is listed as unavailable.
+dependencies = ["pydantic>=2.10,<3"]
+keywords = ["security", "toolkit", "framework", "plugin", "scanner", "log-analysis", "threat-intel"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=5",
+    "ruff>=0.17,<0.18",
+    "mypy>=2.4,<3",
+]
+
+[project.scripts]
+kale = "kale.cli:main"
+
+# Built-in modules register exactly like third-party plugins do.
+[project.entry-points."kale.modules"]
+"logs.auth" = "kale.modules.auth_logs:AuthLogModule"
+"malware.static" = "kale.modules.static_malware:StaticMalwareModule"
+"web.scan" = "kale.modules.web_scan:WebScanModule"
+
+[tool.setuptools.dynamic]
+version = { attr = "kale.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+kale = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error::ResourceWarning"]
+
+[tool.coverage.run]
+source = ["kale"]
+branch = true
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if __name__ == .__main__.:", "if TYPE_CHECKING:"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "S", "ASYNC"]
+ignore = [
+    "RUF001", # Turkish text legitimately contains characters like "ı"
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S108"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]

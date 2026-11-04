@@ -1,0 +1,216 @@
+{
+  "$defs": {
+    "ErrorCode": {
+      "enum": [
+        "invalid_input",
+        "out_of_scope",
+        "missing_secret",
+        "timeout",
+        "failed"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "description": "One result, written so that the reader knows what is wrong and what to do.",
+      "properties": {
+        "rule_id": {
+          "pattern": "^[a-z0-9][a-z0-9_-]*(\\.[a-z0-9_-]+)+$",
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "recommendation": {
+          "default": "",
+          "title": "Recommendation",
+          "type": "string"
+        },
+        "evidence": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Evidence",
+          "type": "object"
+        },
+        "observables": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Observable"
+          },
+          "title": "Observables",
+          "type": "array"
+        },
+        "references": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "References",
+          "type": "array"
+        }
+      },
+      "required": [
+        "rule_id",
+        "severity",
+        "title"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Kind": {
+      "description": "What an observable is. Modules declare which kinds they accept.",
+      "enum": [
+        "domain",
+        "ip",
+        "url",
+        "email",
+        "hash",
+        "file",
+        "software",
+        "cve"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "ModuleError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ModuleError",
+      "type": "object"
+    },
+    "Observable": {
+      "additionalProperties": false,
+      "description": "Something a module can look at: a target given by the user or a fact a module found.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "Observable",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One module run against one target; the unit every report format renders.",
+  "properties": {
+    "schema_version": {
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "module": {
+      "title": "Module",
+      "type": "string"
+    },
+    "module_version": {
+      "title": "Module Version",
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/Observable"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "findings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "observables": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Observable"
+      },
+      "title": "Observables",
+      "type": "array"
+    },
+    "summary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Summary",
+      "type": "object"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModuleError"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "module",
+    "module_version",
+    "target",
+    "started_at",
+    "finished_at"
+  ],
+  "title": "ModuleResult",
+  "type": "object"
+}

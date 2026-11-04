@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+
+# Local data: real logs, samples and reports never go into the repo
+.env
+/private/
+/report*.json
+/report*.txt
+*.evtx
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

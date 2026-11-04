@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# kale wraps tools that live in their own repositories. CI checks them out next to kale,
+# in the same layout as a local setup, and runs the contract tests against their main
+# branches: a change in a tool that breaks its adapter shows up here.
+jobs:
+  check:
+    name: Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        # bash stops at the first failing command; Windows PowerShell only reports the last one
+        shell: bash
+        working-directory: kale
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: kale
+      - uses: actions/checkout@v6
+        with:
+          repository: AliOsmanToklu/log-analyzer
+          path: log-analyzer
+      - uses: actions/checkout@v6
+        with:
+          repository: AliOsmanToklu/KALKAN
+          path: kalkan
+      - uses: actions/checkout@v6
+        with:
+          repository: AliOsmanToklu/malware-static-analyzer
+          path: malware-static-analyzer
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install kale and the wrapped tools
+        run: pip install -e ../log-analyzer -e ../kalkan -e ../malware-static-analyzer -e ".[dev]"
+      - name: Lint
+        if: matrix.python-version == '3.14'
+        run: |
+          ruff format --check .
+          ruff check --output-format=github .
+      - name: Type check
+        run: mypy
+      - name: Test
+        run: pytest --cov --cov-fail-under=90

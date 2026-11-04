@@ -119,15 +119,18 @@ class VulnIntelModule:
     ) -> None:
         self._transport = transport
         self._cache = cache
-        self._intervals = {**INTERVALS, **(intervals or {})}
+        intervals = {**INTERVALS, **(intervals or {})}
+        # One limiter per service for the module's lifetime: `kale investigate` runs the
+        # module many times in a row, and NVD's spacing has to hold across those runs.
+        self._limiters = {name: MinInterval(seconds) for name, seconds in intervals.items()}
         self._retry_delay = retry_delay
 
     async def run(self, target: Observable, ctx: RunContext) -> ModuleOutput:
         nvd_key = ctx.secrets.get(NVD_KEY_ENV)
         query = parse_software(target.value) if target.kind is Kind.SOFTWARE else None
         ttl = ctx.get_float("cache_hours") * _HOUR
-        limiters = {name: MinInterval(self._intervals[name]) for name in ("osv", "kev", "epss")}
-        limiters["nvd"] = MinInterval(self._intervals["nvd_with_key" if nvd_key else "nvd"])
+        limiters = {name: self._limiters[name] for name in ("osv", "kev", "epss")}
+        limiters["nvd"] = self._limiters["nvd_with_key" if nvd_key else "nvd"]
         async with httpx.AsyncClient(
             transport=self._transport,
             timeout=ctx.get_float("timeout"),

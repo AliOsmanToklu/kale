@@ -134,6 +134,8 @@ def guess_target(value: str, accepts: frozenset[Kind], kind: Kind | None = None)
     for observable in candidates:
         if observable.kind in accepts:
             return observable
+    if Kind.SOFTWARE in accepts and not candidates:  # "nginx@1.18.0", "pkg:npm/x@1"
+        return _observable(Kind.SOFTWARE, value)
     if len(accepts) == 1:  # e.g. a file that does not exist: let the module say so
         return _observable(next(iter(accepts)), value)
     if candidates:

@@ -29,6 +29,7 @@ def test_modules_list(capsys: pytest.CaptureFixture[str]) -> None:
         "intel.enrich": "passive",
         "logs.auth": "passive",
         "malware.static": "passive",
+        "vuln.intel": "passive",
         "web.scan": "active",
     }
 
@@ -221,6 +222,12 @@ def test_guess_target_with_explicit_kind() -> None:
     assert cli.guess_target("x", NETWORK, Kind.SOFTWARE).kind is Kind.SOFTWARE
     with pytest.raises(UsageError, match="invalid ip target"):
         cli.guess_target("example.com", NETWORK, Kind.IP)
+
+
+def test_guess_target_falls_back_to_software() -> None:
+    accepts = frozenset({Kind.SOFTWARE, Kind.CVE})
+    assert cli.guess_target("nginx@1.18.0", accepts).kind is Kind.SOFTWARE
+    assert cli.guess_target("CVE-2021-44228", accepts).kind is Kind.CVE
 
 
 def test_guess_target_gives_up_on_nonsense() -> None:

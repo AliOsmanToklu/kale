@@ -24,6 +24,7 @@ Yerleşik modüller doğrudan kale'nin parçasıdır:
 |---|---|---|---|
 | `intel.enrich` | GreyNoise, AbuseIPDB, URLhaus, MalwareBazaar ve VirusTotal'dan itibar bilgisi | IP, alan adı, URL, hash | pasif |
 | `vuln.intel` | NVD ve OSV'den bilinen açıklar; CISA KEV ve EPSS ile önceliklendirilir | yazılım, CVE | pasif |
+| `surface.discover` | Certificate Transparency kayıtlarından alt alan adları, sahipsiz CNAME'ler, subdomain takeover | alan adı | pasif |
 
 ## Kurulum
 
@@ -138,6 +139,31 @@ gönderir ve yeniden dener. `NVD_API_KEY` bu sınırı on katına çıkarır. Li
 güvenlik düzeltmelerini sürüm numarasını değiştirmeden geri taşıyabilir; bir eşleşmeye göre
 harekete geçmeden önce dağıtımın paketini kontrol edin.
 
+### Saldırı yüzeyi
+
+`surface.discover`, bir alan adının hostlarını Certificate Transparency kayıtlarından
+(crt.sh ve CertSpotter) çıkarır ve her adı DNS'te kontrol eder. Hostların kendisine hiçbir
+istek gönderilmez; bu yüzden kapsam (scope) olmadan çalışır:
+
+```bash
+kale run surface.discover example.com
+kale run surface.discover example.com --set sources=certspotter --set max_names=100
+```
+
+| Bulgu | Önem derecesi |
+|---|---|
+| olası subdomain takeover: herkesin sahiplenebildiği bir serviste (Azure, AWS Elastic Beanstalk) var olmayan bir ada işaret eden CNAME | high |
+| sahipsiz (dangling) CNAME: aynı durum başka bir serviste | medium |
+| özel IP adreslerine işaret eden genel adlar | low |
+| herkese açık sertifikalarda listelenen geliştirme ve yönetim hostları (`dev.`, `staging.`, `admin.`, `jenkins.`, ...) | low |
+
+Takeover yalnızca DNS ile tespit edilir (CNAME hedefi NXDOMAIN döndürür). S3 veya GitHub
+Pages gibi servisler ancak hosta HTTP isteği atılarak doğrulanabilir; bu modülü aktif yapardı,
+bu yüzden en fazla sahipsiz CNAME olarak raporlanırlar. crt.sh eksiksizdir ama yavaştır
+(orta büyüklükte bir alan adı için bir dakika); CertSpotter hızlıdır ama anahtarsız saatte
+yaklaşık on isteğe izin verir (`CERTSPOTTER_API_KEY`), bu yüzden yalnızca ilk sayfaları
+okunur. Çözümlenen hostlar ve genel IP adresleri diğer modüller için gözlemlenebilir olur.
+
 ## Sonuç biçimi
 
 Her çalıştırma bir `ModuleResult` üretir ([şema](schemas/result.v1.json)). Alanların
@@ -168,17 +194,17 @@ bakın. `tests/test_contract.py` her kayıtlı modülü kurallara karşı otomat
 ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=90
 ```
 
-Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.enrich` ve
-`vuln.intel` gerçek servisleri taklit eden sahte bir HTTP katmanıyla test edilir.
+Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.enrich`,
+`vuln.intel` ve `surface.discover` gerçek servisleri taklit eden sahte bir HTTP katmanıyla
+(ve sahte bir DNS çözümleyiciyle) test edilir.
 
 ## Yol haritası
 
 1. **Çekirdek** (tamamlandı): sözleşme, registry, motor, kapsam, CLI, üç aracın adaptörleri
    (`logs.auth`, `malware.static`, `web.scan`) ve hepsini birlikte test eden CI.
-2. **Yeni modüller** (sürüyor): `intel.enrich` (tamamlandı), `vuln.intel` (tamamlandı),
-   `surface.discover` (Certificate
-   Transparency'den alt alan adları, subdomain takeover). Ardından her modülün
-   gözlemlenebilirlerini bir sonrakine aktaran `kale investigate`.
+2. **Yeni modüller** (sürüyor): `intel.enrich`, `vuln.intel` ve `surface.discover`
+   (tamamlandı). Ardından her modülün gözlemlenebilirlerini bir sonrakine aktaran
+   `kale investigate`.
 3. **Arayüzler**: iş kuyruklu FastAPI servisi, HTML/PDF raporlar, web arayüzü.
 4. **Derinlik**: YARA, Sigma kuralları, EVTX, SARIF ve STIX dışa aktarma, MITRE ATT&CK eşlemesi.
 

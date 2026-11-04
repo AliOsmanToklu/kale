@@ -17,6 +17,12 @@ Existing tools join through thin adapters and stay independent projects:
 | `malware.static` | [malware-static-analyzer](https://github.com/AliOsmanToklu/malware-static-analyzer): PE imports and sections, suspicious strings, hashes and a heuristic risk score, analyzed in an isolated process | file | passive |
 | `web.scan` | [Kalkan](https://github.com/AliOsmanToklu/KALKAN): TLS, headers, exposed files, ports, outdated software, SPF/DMARC/DKIM, DNS | domain, URL, IP | active |
 
+Native modules are part of kale itself:
+
+| Module | What it does | Accepts | Mode |
+|---|---|---|---|
+| `intel.enrich` | Reputation from GreyNoise, AbuseIPDB, URLhaus, MalwareBazaar and VirusTotal | IP, domain, URL, hash | passive |
+
 ## Installation
 
 Requires Python 3.12+. The wrapped tools are installed from their own repositories,
@@ -69,6 +75,35 @@ kale run web.scan intranet.local --scope-file scope.txt --allow-private
 
 A scope file holds one domain or CIDR per line; `#` starts a comment. Private and reserved
 addresses also need `--allow-private`.
+
+### Threat intelligence
+
+`intel.enrich` asks every configured source about an observable and reports what each one
+says (malicious, suspicious, benign or no data):
+
+```bash
+kale run intel.enrich 185.10.20.30
+kale run intel.enrich 468ffe129c395abf6b21a09efdf261910a95fb98aa982ead73caa7b2b684577e
+kale run intel.enrich https://evil.example/payload.bin --set sources=urlhaus,virustotal
+```
+
+| Source | Looks up | Environment variable |
+|---|---|---|
+| GreyNoise Community | IPv4: internet-wide scanners, known services | `GREYNOISE_API_KEY` (optional) |
+| AbuseIPDB | IP abuse reports | `ABUSEIPDB_API_KEY` |
+| URLhaus (abuse.ch) | malware URLs and the hosts serving them | `ABUSECH_AUTH_KEY` |
+| MalwareBazaar (abuse.ch) | known malware samples by hash | `ABUSECH_AUTH_KEY` |
+| VirusTotal | stored reports for IPs, domains, URLs and hashes | `VIRUSTOTAL_API_KEY` |
+
+Sources without a key are skipped and listed in the summary; GreyNoise works without one
+at low volume. VirusTotal's free API is for non-commercial use and allows 4 requests a
+minute, which kale respects.
+
+Looking a value up discloses it to the source, so kale never sends private or reserved
+addresses, internal host names (`.local`, `.corp`, single-label names, ...) or URLs that
+contain credentials. Files are never uploaded: only hashes are looked up, and URLs are
+never submitted for scanning. Answers are cached for 24 hours (`--set cache_hours=0` turns
+the cache off; `KALE_CACHE_DIR` moves it) so investigations do not burn through free quotas.
 
 ## Result format
 
@@ -141,7 +176,8 @@ Register it in the plugin's `pyproject.toml`:
 
 Loading a plugin runs its code, so third-party plugins load only when allow-listed:
 `KALE_PLUGINS=intel.hash`. The engine handles the rest: input kind, scope, secrets, option
-parsing, timeouts and error reporting. `tests/test_contract.py` checks every registered
+parsing, timeouts and error reporting. Keys a module can work without go in
+`optional_secrets` instead of `secrets`: they reach the module only when they are set. `tests/test_contract.py` checks every registered
 module against the rules automatically.
 
 ## Architecture
@@ -155,6 +191,8 @@ src/kale/
 │   ├── engine.py    # guards, timeout, error isolation
 │   └── scope.py     # authorization scope for active modules
 ├── modules/         # built-in modules and adapters
+│   └── intel/       # intel.enrich: sources, privacy guard, verdict aggregation
+├── net/             # shared by modules that call services: rate limiter, TTL cache
 ├── report.py        # text (terminal-safe) and JSON renderers
 └── cli.py           # thin command line layer
 ```
@@ -165,20 +203,19 @@ src/kale/
 ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=90
 ```
 
-Tests never touch the network: the Kalkan adapter is tested against a fake scanner.
+Tests never touch the network: the Kalkan adapter is tested against a fake scanner and
+`intel.enrich` against a fake HTTP layer.
 
 ## Roadmap
 
-1. **Core** (this release): contract, registry, engine, scope, CLI and adapters for all three
-   tools: `logs.auth`, `malware.static`, `web.scan`.
-2. **Repository and CI**: CI that checks out the wrapped tools next to kale and runs the
-   contract tests against them.
-3. **New modules**: `intel.enrich` (IP/domain/URL/hash reputation), `vuln.intel` (CVEs from
-   OSV/NVD, prioritized with CISA KEV and EPSS), `surface.discover` (subdomains from
-   Certificate Transparency, subdomain takeover). Then `kale investigate`, which feeds each
-   module's observables to the next.
-4. **Interfaces**: FastAPI service with a job queue, HTML/PDF reports, web UI.
-5. **Depth**: YARA, Sigma rules, EVTX, SARIF and STIX export, MITRE ATT&CK mapping.
+1. **Core** (done): contract, registry, engine, scope, CLI, adapters for all three tools
+   (`logs.auth`, `malware.static`, `web.scan`) and CI that tests them together.
+2. **New modules** (in progress): `intel.enrich` (done), `vuln.intel` (CVEs from OSV/NVD,
+   prioritized with CISA KEV and EPSS), `surface.discover` (subdomains from Certificate
+   Transparency, subdomain takeover). Then `kale investigate`, which feeds each module's
+   observables to the next.
+3. **Interfaces**: FastAPI service with a job queue, HTML/PDF reports, web UI.
+4. **Depth**: YARA, Sigma rules, EVTX, SARIF and STIX export, MITRE ATT&CK mapping.
 
 ## License
 

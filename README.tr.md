@@ -18,6 +18,12 @@ Mevcut araçlar ince adaptörlerle bağlanır ve bağımsız projeler olarak kal
 | `malware.static` | [malware-static-analyzer](https://github.com/AliOsmanToklu/malware-static-analyzer): PE import ve section analizi, şüpheli string'ler, hash'ler ve sezgisel risk puanı; analiz izole bir süreçte yapılır | dosya | pasif |
 | `web.scan` | [Kalkan](https://github.com/AliOsmanToklu/KALKAN): TLS, başlıklar, açıkta kalan dosyalar, portlar, eski yazılımlar, SPF/DMARC/DKIM, DNS | alan adı, URL, IP | aktif |
 
+Yerleşik modüller doğrudan kale'nin parçasıdır:
+
+| Modül | Ne yapar | Girdi | Tür |
+|---|---|---|---|
+| `intel.enrich` | GreyNoise, AbuseIPDB, URLhaus, MalwareBazaar ve VirusTotal'dan itibar bilgisi | IP, alan adı, URL, hash | pasif |
+
 ## Kurulum
 
 Python 3.12+ gerekir. Sarmalanan araçlar kendi repolarından, bu reponun yanına kurulur:
@@ -70,6 +76,36 @@ kale run web.scan intranet.local --scope-file scope.txt --allow-private
 Kapsam dosyasında her satırda bir alan adı veya CIDR bulunur; `#` yorum başlatır. Özel
 ve ayrılmış adresler için ayrıca `--allow-private` gerekir.
 
+### Tehdit istihbaratı
+
+`intel.enrich`, yapılandırılmış her kaynağa bir gözlemlenebiliri sorar ve her birinin ne
+dediğini raporlar (kötü amaçlı, şüpheli, zararsız ya da veri yok):
+
+```bash
+kale run intel.enrich 185.10.20.30
+kale run intel.enrich 468ffe129c395abf6b21a09efdf261910a95fb98aa982ead73caa7b2b684577e
+kale run intel.enrich https://evil.example/payload.bin --set sources=urlhaus,virustotal
+```
+
+| Kaynak | Neye bakar | Ortam değişkeni |
+|---|---|---|
+| GreyNoise Community | IPv4: internet çapında tarayıcılar, bilinen servisler | `GREYNOISE_API_KEY` (isteğe bağlı) |
+| AbuseIPDB | IP kötüye kullanım bildirimleri | `ABUSEIPDB_API_KEY` |
+| URLhaus (abuse.ch) | zararlı yazılım dağıtan URL'ler ve onları barındıran sunucular | `ABUSECH_AUTH_KEY` |
+| MalwareBazaar (abuse.ch) | hash'e göre bilinen zararlı yazılım örnekleri | `ABUSECH_AUTH_KEY` |
+| VirusTotal | IP, alan adı, URL ve hash'ler için kayıtlı raporlar | `VIRUSTOTAL_API_KEY` |
+
+Anahtarı olmayan kaynaklar atlanır ve özette listelenir; GreyNoise az sayıda sorgu için
+anahtarsız da çalışır. VirusTotal'ın ücretsiz API'si ticari olmayan kullanım içindir ve
+dakikada 4 isteğe izin verir; kale bu sınıra uyar.
+
+Bir değeri sorgulamak, onu kaynağa açıklamak demektir. Bu yüzden kale özel veya ayrılmış
+adresleri, iç ağ adlarını (`.local`, `.corp`, tek etiketli adlar, ...) ve kimlik bilgisi
+içeren URL'leri hiçbir zaman göndermez. Dosyalar asla yüklenmez, yalnızca hash'leri
+sorgulanır; URL'ler de taramaya gönderilmez. Cevaplar 24 saat önbellekte tutulur
+(`--set cache_hours=0` önbelleği kapatır, `KALE_CACHE_DIR` yerini değiştirir); böylece
+incelemeler ücretsiz kotaları tüketmez.
+
 ## Sonuç biçimi
 
 Her çalıştırma bir `ModuleResult` üretir ([şema](schemas/result.v1.json)). Alanların
@@ -88,7 +124,9 @@ Modül; bir `spec` ve async bir `run` içeren bir sınıftır. Eklentinin `pypro
 dosyasında `kale.modules` entry-point grubuna kaydedilir. Eklenti yüklemek kod çalıştırmak
 demek olduğundan, üçüncü taraf eklentiler yalnızca izin listesindeyse yüklenir:
 `KALE_PLUGINS=intel.hash`. Girdi türü, kapsam, sırlar, seçenekler, zaman aşımı ve hata
-raporlama motor tarafından yapılır. Örnek kod için [İngilizce README](README.md#writing-a-module)'ye
+raporlama motor tarafından yapılır. Modülün onsuz da çalışabildiği anahtarlar `secrets`
+yerine `optional_secrets` içinde tanımlanır; yalnızca ayarlanmışlarsa modüle ulaşırlar.
+Örnek kod için [İngilizce README](README.md#writing-a-module)'ye
 bakın. `tests/test_contract.py` her kayıtlı modülü kurallara karşı otomatik olarak test eder.
 
 ## Geliştirme
@@ -97,20 +135,19 @@ bakın. `tests/test_contract.py` her kayıtlı modülü kurallara karşı otomat
 ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=90
 ```
 
-Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla test edilir.
+Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.enrich` sahte bir
+HTTP katmanıyla test edilir.
 
 ## Yol haritası
 
-1. **Çekirdek** (bu sürüm): sözleşme, registry, motor, kapsam, CLI ve üç aracın adaptörleri:
-   `logs.auth`, `malware.static`, `web.scan`.
-2. **Repo ve CI**: sarmalanan araçları kale'nin yanına checkout edip sözleşme testlerini onlara
-   karşı çalıştıran CI.
-3. **Yeni modüller**: `intel.enrich` (IP/alan adı/URL/hash itibarı), `vuln.intel` (OSV/NVD'den
+1. **Çekirdek** (tamamlandı): sözleşme, registry, motor, kapsam, CLI, üç aracın adaptörleri
+   (`logs.auth`, `malware.static`, `web.scan`) ve hepsini birlikte test eden CI.
+2. **Yeni modüller** (sürüyor): `intel.enrich` (tamamlandı), `vuln.intel` (OSV/NVD'den
    CVE'ler, CISA KEV ve EPSS ile önceliklendirme), `surface.discover` (Certificate
    Transparency'den alt alan adları, subdomain takeover). Ardından her modülün
    gözlemlenebilirlerini bir sonrakine aktaran `kale investigate`.
-4. **Arayüzler**: iş kuyruklu FastAPI servisi, HTML/PDF raporlar, web arayüzü.
-5. **Derinlik**: YARA, Sigma kuralları, EVTX, SARIF ve STIX dışa aktarma, MITRE ATT&CK eşlemesi.
+3. **Arayüzler**: iş kuyruklu FastAPI servisi, HTML/PDF raporlar, web arayüzü.
+4. **Derinlik**: YARA, Sigma kuralları, EVTX, SARIF ve STIX dışa aktarma, MITRE ATT&CK eşlemesi.
 
 ## Lisans
 

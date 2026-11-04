@@ -127,3 +127,17 @@ async def test_module_failures_become_errors(module: Module, code: ErrorCode, me
     assert result.error.code is code
     assert message in result.error.message
     assert result.findings == ()
+
+
+async def test_optional_secrets_are_passed_only_when_set() -> None:
+    without = await run_module(fakes.OptionalSecretModule(), TARGET, environ={})
+    assert without.ok
+    assert without.summary == {"keys": []}
+    empty = await run_module(
+        fakes.OptionalSecretModule(), TARGET, environ={"FAKE_OPTIONAL_KEY": ""}
+    )
+    assert empty.summary == {"keys": []}
+    present = await run_module(
+        fakes.OptionalSecretModule(), TARGET, environ={"FAKE_OPTIONAL_KEY": "k"}
+    )
+    assert present.summary == {"keys": ["FAKE_OPTIONAL_KEY"]}

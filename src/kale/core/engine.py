@@ -101,7 +101,11 @@ def _prepare(
         raise MissingSecretError(f"{spec.name} needs environment variable(s): {', '.join(missing)}")
     return RunContext(
         options=resolve_options(spec, raw_options),
-        secrets={name: environ[name] for name in spec.secrets},
+        secrets={
+            name: environ[name]
+            for name in spec.secrets | spec.optional_secrets
+            if environ.get(name)
+        },
         lang=lang,
         allow_private=scope.allow_private if scope else False,
     )

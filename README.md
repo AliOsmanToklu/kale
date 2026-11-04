@@ -22,6 +22,7 @@ Native modules are part of kale itself:
 | Module | What it does | Accepts | Mode |
 |---|---|---|---|
 | `intel.enrich` | Reputation from GreyNoise, AbuseIPDB, URLhaus, MalwareBazaar and VirusTotal | IP, domain, URL, hash | passive |
+| `vuln.intel` | Known vulnerabilities from NVD and OSV, ranked with CISA KEV and EPSS | software, CVE | passive |
 
 ## Installation
 
@@ -105,6 +106,36 @@ contain credentials. Files are never uploaded: only hashes are looked up, and UR
 never submitted for scanning. Answers are cached for 24 hours (`--set cache_hours=0` turns
 the cache off; `KALE_CACHE_DIR` moves it) so investigations do not burn through free quotas.
 
+### Vulnerabilities
+
+`vuln.intel` lists the known vulnerabilities of a software version, or the details of one
+CVE, in the order a defender should handle them:
+
+```bash
+kale run vuln.intel nginx@1.18.0                        # a product Kalkan fingerprints
+kale run vuln.intel "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"
+kale run vuln.intel pkg:npm/lodash@4.17.20             # any package URL
+kale run vuln.intel CVE-2021-44228
+```
+
+Server software goes to NVD by CPE name (some products are listed under two vendors, such
+as `f5:nginx` and `nginx:nginx`, and both are asked). JavaScript libraries and package URLs
+go to OSV, whose GitHub advisories cover them better. Each vulnerability then gets a
+priority, which is the finding's severity:
+
+| Priority | When |
+|---|---|
+| critical | in CISA's Known Exploited Vulnerabilities catalog: exploited in the wild |
+| high | EPSS of 10% or more (likely to be exploited within 30 days), or CVSS 9 or more |
+| medium | CVSS 7 or more |
+| low | everything else |
+
+CVSS says how bad an exploit would be, not how likely one is, so a CVSS 9.8 issue is not
+critical on its own. NVD works without a key but allows only 5 requests per 30 seconds and
+often resets connections; kale spaces requests out and retries them. `NVD_API_KEY` raises
+the limit tenfold. Linux distributions often backport fixes without changing the version
+number, so check the distribution's package before acting on a match.
+
 ## Result format
 
 Every run produces a `ModuleResult` ([schema](schemas/result.v1.json)):
@@ -133,7 +164,8 @@ Every run produces a `ModuleResult` ([schema](schemas/result.v1.json)):
 ```
 
 - `rule_id` is stable across versions, so findings can be tracked, suppressed or compared.
-- `severity` is one of `critical`, `high`, `medium`, `low`, `info`.
+- `severity` is one of `critical`, `high`, `medium`, `low`, `info`. Findings come worst
+  first; within one severity they keep the order the module ranked them in.
 - `observables` are facts other modules can take as input (an attacker IP for a reputation
   lookup, a software version for a CVE lookup).
 - Failures never crash a run: they appear in `error` with a code (`invalid_input`,
@@ -191,8 +223,10 @@ src/kale/
 │   ├── engine.py    # guards, timeout, error isolation
 │   └── scope.py     # authorization scope for active modules
 ├── modules/         # built-in modules and adapters
-│   └── intel/       # intel.enrich: sources, privacy guard, verdict aggregation
-├── net/             # shared by modules that call services: rate limiter, TTL cache
+│   ├── intel/       # intel.enrich: sources, privacy guard, verdict aggregation
+│   └── vuln/        # vuln.intel: CPE/purl mapping, NVD, OSV, KEV, EPSS, priority
+├── net/             # shared by modules that call services: HTTP errors and retries,
+│                    # rate limiter, TTL cache
 ├── report.py        # text (terminal-safe) and JSON renderers
 └── cli.py           # thin command line layer
 ```
@@ -204,14 +238,14 @@ ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=9
 ```
 
 Tests never touch the network: the Kalkan adapter is tested against a fake scanner and
-`intel.enrich` against a fake HTTP layer.
+`intel.enrich` and `vuln.intel` against a fake HTTP layer shaped like the real services.
 
 ## Roadmap
 
 1. **Core** (done): contract, registry, engine, scope, CLI, adapters for all three tools
    (`logs.auth`, `malware.static`, `web.scan`) and CI that tests them together.
-2. **New modules** (in progress): `intel.enrich` (done), `vuln.intel` (CVEs from OSV/NVD,
-   prioritized with CISA KEV and EPSS), `surface.discover` (subdomains from Certificate
+2. **New modules** (in progress): `intel.enrich` (done), `vuln.intel` (done),
+   `surface.discover` (subdomains from Certificate
    Transparency, subdomain takeover). Then `kale investigate`, which feeds each module's
    observables to the next.
 3. **Interfaces**: FastAPI service with a job queue, HTML/PDF reports, web UI.

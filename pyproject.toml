@@ -28,8 +28,16 @@ classifiers = [
 [project.optional-dependencies]
 intel = ["httpx>=0.28,<1"]
 surface = ["httpx>=0.28,<1", "dnspython>=2.6"]
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "python-multipart>=0.0.18",
+    "pydantic-settings>=2.6",
+]
 dev = [
-    "kale[intel,surface]",
+    "kale[intel,surface,server]",
     "pytest>=8",
     "pytest-asyncio>=0.25",
     "pytest-cov>=5",
@@ -56,7 +64,12 @@ version = { attr = "kale.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-kale = ["py.typed"]
+kale = [
+    "py.typed",
+    "server/migrations/*.py",
+    "server/migrations/*.mako",
+    "server/migrations/versions/*.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

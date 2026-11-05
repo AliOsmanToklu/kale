@@ -186,6 +186,94 @@ bu yüzden en fazla sahipsiz CNAME olarak raporlanırlar. crt.sh eksiksizdir ama
 yaklaşık on isteğe izin verir (`CERTSPOTTER_API_KEY`), bu yüzden yalnızca ilk sayfaları
 okunur. Çözümlenen hostlar ve genel IP adresleri diğer modüller için gözlemlenebilir olur.
 
+## Servisi çalıştırmak
+
+kale bir ekip için servis olarak da çalışabilir: bir HTTP API modül çalıştırmalarını ve
+incelemeleri kuyruğa alır, ayrı worker süreçleri de bunları işler. Sonuçlar komut satırının
+yazdığı JSON belgelerinin aynısıdır ([çalıştırma](schemas/result.v1.json),
+[inceleme](schemas/investigation.v1.json)).
+
+```bash
+uv pip install -e ".[server]"                # FastAPI, uvicorn, SQLAlchemy, Alembic (.[dev] içinde de var)
+kale db upgrade                              # veritabanını oluştur veya güncelle
+kale token create --name ci --role runner    # yalnızca bir kez gösterilir: saklayın
+kale serve                                   # API http://127.0.0.1:8000, belgeler /api/docs
+kale worker                                  # başka bir terminalde; gerektiği kadar başlatın
+```
+
+`reader` token'ı modülleri listeleyebilir, kapsamı ve işleri okuyabilir; `runner` token'ı
+ayrıca iş gönderip iptal edebilir. Token'lar yalnızca SHA-256 özetleri olarak saklanır:
+`kale token list` adları ve önekleri gösterir, `kale token revoke NAME` bir sonraki istekte
+geçerli olur. Token oluşturan bir uç nokta yoktur; bunun için veritabanına erişim gerekir.
+
+| Değişken | Varsayılan | Anlamı |
+|---|---|---|
+| `KALE_DATABASE_URL` | `sqlite:///<veri dizini>/kale.db` | SQLAlchemy URL'si; PostgreSQL için `postgresql+psycopg://` |
+| `KALE_SCOPE_FILE` | ayarlı değil | sunucu kapsamı; ayarlı değilse hiçbir aktif modül çalışmaz |
+| `KALE_ALLOW_PRIVATE` | `false` | kapsam içindeki özel IP adreslerine izin ver |
+| `KALE_UPLOAD_DIR` | `<veri dizini>/uploads` | yüklenen dosyaların karantinası |
+| `KALE_MAX_UPLOAD_MB` | `64` | yükleme boyutu sınırı |
+| `KALE_MAX_RUNS` | `100` | bir incelemenin `max_runs` değerinin üst sınırı |
+| `KALE_JOB_TIMEOUT` | `3600` | bir işin çalışabileceği saniye |
+| `KALE_JOB_ATTEMPTS` | `3` | worker'ı sürekli çöken bir işin başarısız sayılmadan önceki alınma sayısı |
+| `KALE_HEARTBEAT_SECONDS` | `15` | worker'ın işinin yaşadığını ne sıklıkla bildirdiği |
+| `KALE_STALE_SECONDS` | `120` | hangi heartbeat yaşından sonra işi başka bir worker'ın devraldığı |
+| `KALE_WORKER_POLL_SECONDS` | `1` | boştaki bir worker'ın kuyruğa ne sıklıkla baktığı |
+
+Veri dizini Windows'ta `%LOCALAPPDATA%\kale`, diğer sistemlerde `$XDG_DATA_HOME/kale`
+(veya `~/.local/share/kale`) olur.
+
+**Kapsam.** Aktif modüller yalnızca sunucu kapsamındaki hedeflere dokunur; bu kapsam
+`KALE_SCOPE_FILE` ile verilen, `--scope-file` biçimindeki bir dosyadır. Bir iş `scope`
+göndererek kapsamı daraltabilir, asla genişletemez: sunucu kapsamında `shop.example.com`
+varken `example.com` isteyen iş reddedilir. Her worker, iş başlarken işin kapsamını kapsam
+dosyasıyla yeniden kesiştirir; böylece dosyadan çıkarılan bir hedefe, değişiklikten önce
+kuyruğa alınmış işler bile dokunmaz. `kale serve` dosyayı başlarken okur: hedef ekledikten
+sonra yeniden başlatın. Kapsam dosyası eksik veya geçersizse iki komut da başlamaz.
+
+**Yüklemeler.** Dosya alan modüller (`logs.auth`, `malware.static`) dosyayı multipart bir
+istekle alır. Dosya `KALE_UPLOAD_DIR` içinde (0700 izinli bir dizin) rastgele bir adla
+saklanır ve gerçekten okunan baytlara göre `KALE_MAX_UPLOAD_MB` ile sınırlanır. Asla
+çalıştırılmaz, hiçbir uç nokta onu geri döndürmez ve sonuç ne olursa olsun iş bitince
+silinir; yalnızca adı (gösterim için), boyutu ve SHA-256 özeti kalır.
+
+Bir alan adı işi, bir dosya işi gönderin, ardından sonucu ve metin raporunu okuyun:
+
+```bash
+curl -s http://127.0.0.1:8000/api/v1/jobs \
+  -H "Authorization: Bearer $KALE_TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"run","module":"surface.discover","target":{"kind":"domain","value":"example.com"}}'
+# {"id":"0b6c3f4e-...","status":"queued"}
+
+curl -s http://127.0.0.1:8000/api/v1/jobs \
+  -H "Authorization: Bearer $KALE_TOKEN" \
+  -F 'job={"kind":"run","module":"logs.auth","target":{"kind":"file"}};type=application/json' \
+  -F file=@auth.log
+
+curl -s http://127.0.0.1:8000/api/v1/jobs/0b6c3f4e-... -H "Authorization: Bearer $KALE_TOKEN"
+curl -s http://127.0.0.1:8000/api/v1/jobs/0b6c3f4e-.../report -H "Authorization: Bearer $KALE_TOKEN"
+```
+
+Bir iş önce `queued`, sonra `running`, en sonunda `succeeded` veya `failed` olur; kuyruktaki
+bir iş `POST /api/v1/jobs/{id}/cancel` ile iptal edilebilir. `succeeded` işin bir sonuç
+ürettiği anlamına gelir: modülün kendi hatası (geçersiz bir dosya, kapsam dışı bir hedef)
+komut satırında olduğu gibi sonucun içindedir. `failed` altyapının pes ettiğini gösterir:
+işin süresi doldu, worker üç kez çöktü veya kapsam dosyası bozuldu. `GET /api/v1/jobs`
+işleri en yeniden başlayarak listeler; sonraki sayfa için elinizdeki en eski `created_at`
+değerini `before` olarak gönderin.
+
+Gerçek kullanımdan önce bilinmesi gerekenler:
+
+- `kale serve` `127.0.0.1` adresine bağlanır. Dışarıya açmadan önce önüne bir TLS ters
+  vekil sunucusu (Caddy, nginx) koyun: token'lar bir başlıkta taşınır ve ağda şifresiz
+  dolaşmamalıdır.
+- Anahtarsız kullanılan servislerin (NVD, CertSpotter) hız sınırları her worker sürecinin
+  içinde tutulur. Anahtar yoksa tek worker çalıştırın; yoksa iki worker birlikte sınırı
+  aşabilir.
+- Servis anahtarları (`VIRUSTOTAL_API_KEY`, `NVD_API_KEY`, ...) yalnızca worker'ların
+  ortamında bulunur. İstekler anahtar taşıyamaz; `GET /api/v1/modules` yalnızca her birinin
+  ayarlı olup olmadığını söyler.
+
 ## Sonuç biçimi
 
 Her çalıştırma bir `ModuleResult` üretir ([şema](schemas/result.v1.json)). Alanların
@@ -218,7 +306,8 @@ ruff format --check . && ruff check . && mypy && pytest --cov --cov-fail-under=9
 
 Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.enrich`,
 `vuln.intel` ve `surface.discover` gerçek servisleri taklit eden sahte bir HTTP katmanıyla
-(ve sahte bir DNS çözümleyiciyle) test edilir.
+(ve sahte bir DNS çözümleyiciyle) test edilir. Servis, her test için ayrı bir SQLite
+dosyasında FastAPI'nin test istemcisiyle, worker da işleri tek tek çalıştırarak test edilir.
 
 ## Yol haritası
 
@@ -227,7 +316,8 @@ Testler ağa hiç çıkmaz: Kalkan adaptörü sahte bir tarayıcıyla, `intel.en
 2. **Yeni modüller ve pipeline** (tamamlandı): `intel.enrich`, `vuln.intel`,
    `surface.discover` ve her modülün gözlemlenebilirlerini bir sonrakine aktaran
    `kale investigate`.
-3. **Arayüzler**: iş kuyruklu FastAPI servisi, HTML/PDF raporlar, web arayüzü.
+3. **Arayüzler**: veritabanı kuyruğu ve worker'larıyla API servisi (tamamlandı),
+   HTML/PDF raporlar, web arayüzü, PostgreSQL'li Docker imajı.
 4. **Derinlik**: YARA, Sigma kuralları, EVTX, SARIF ve STIX dışa aktarma, MITRE ATT&CK eşlemesi.
 
 ## Lisans

@@ -535,3 +535,123 @@ def test_create_app_builds_its_own_engine(
 ) -> None:
     with TestClient(create_app(api_settings, registry=registry)) as client:
         assert client.get("/api/v1/health").status_code == 200
+
+
+def multipart(*parts: tuple[str, str | None, bytes], boundary: str = "kaleboundary") -> bytes:
+    body = b""
+    for name, filename, data in parts:
+        disposition = f'form-data; name="{name}"' + (
+            f'; filename="{filename}"' if filename is not None else ""
+        )
+        body += f"--{boundary}\r\nContent-Disposition: {disposition}\r\n\r\n".encode()
+        body += data + b"\r\n"
+    return body + f"--{boundary}--\r\n".encode()
+
+
+def post_multipart(
+    client: TestClient, runner: dict[str, str], body: bytes, boundary: str = "kaleboundary"
+) -> Any:
+    return client.post(
+        "/api/v1/jobs",
+        content=body,
+        headers={**runner, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+
+
+def test_uploads_go_straight_into_the_quarantine(
+    client: TestClient,
+    runner: dict[str, str],
+    api_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import starlette.formparsers
+
+    def no_spooling(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the upload was spooled outside the quarantine")
+
+    monkeypatch.setattr(starlette.formparsers, "SpooledTemporaryFile", no_spooling)
+    response = client.post(
+        "/api/v1/jobs",
+        data={"job": LOG_JOB},
+        files={"file": ("auth.log", b"x" * (2 * MB), "text/plain")},
+        headers=runner,
+    )
+    assert response.status_code == 202, response.text
+    [stored] = list(api_settings.upload_dir.iterdir())
+    assert stored.stat().st_size == 2 * MB
+
+
+def test_the_file_part_may_come_first(
+    client: TestClient, runner: dict[str, str], ssh_log: Path
+) -> None:
+    body = multipart(("file", "auth.log", ssh_log.read_bytes()), ("job", None, LOG_JOB.encode()))
+    response = post_multipart(client, runner, body)
+    assert response.status_code == 202, response.text
+    job = client.get(response.headers["location"], headers=runner).json()
+    assert job["upload"]["name"] == "auth.log"
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        (("job", None, LOG_JOB.encode()), ("file", "a", b"1"), ("file", "b", b"2")),
+        (("job", None, LOG_JOB.encode()), ("job", None, LOG_JOB.encode()), ("file", "a", b"1")),
+        (("job", None, LOG_JOB.encode()), ("extra", None, b"x"), ("file", "a", b"1")),
+    ],
+)
+def test_unexpected_parts_are_422(
+    client: TestClient,
+    runner: dict[str, str],
+    api_settings: Settings,
+    db: Session,
+    parts: tuple[tuple[str, str | None, bytes], ...],
+) -> None:
+    response = post_multipart(client, runner, multipart(*parts))
+    assert response.status_code == 422
+    assert upload_dir_is_empty(api_settings)
+    assert count(db, Upload) == 0 and count(db, Job) == 0
+
+
+@pytest.mark.parametrize(
+    ("body", "content_type"),
+    [
+        (b"garbage without any boundary", "multipart/form-data; boundary=kaleboundary"),
+        (
+            b"--kaleboundary\r\nContent-Disposition: form-data\r\n\r\nx\r\n--kaleboundary--\r\n",
+            "multipart/form-data; boundary=kaleboundary",
+        ),
+        (b"x", "multipart/form-data"),
+    ],
+)
+def test_malformed_multipart_is_422(
+    client: TestClient,
+    runner: dict[str, str],
+    api_settings: Settings,
+    body: bytes,
+    content_type: str,
+) -> None:
+    response = client.post(
+        "/api/v1/jobs", content=body, headers={**runner, "Content-Type": content_type}
+    )
+    assert response.status_code == 422, response.text
+    assert upload_dir_is_empty(api_settings)
+
+
+def test_a_body_that_ends_inside_the_file_leaves_nothing(
+    client: TestClient, runner: dict[str, str], api_settings: Settings, db: Session
+) -> None:
+    body = multipart(("job", None, LOG_JOB.encode()), ("file", "a.log", b"x" * 1000))
+    response = post_multipart(client, runner, body[:-40])
+    assert response.status_code == 422
+    assert upload_dir_is_empty(api_settings)
+    assert count(db, Upload) == 0
+
+
+def test_job_part_over_1_mb_is_413(
+    client: TestClient, runner: dict[str, str], api_settings: Settings
+) -> None:
+    body = multipart(("job", None, b" " * (MB + 1)), ("file", "a.log", b"x"))
+    response = post_multipart(client, runner, body)
+    assert response.status_code == 413
+    assert response.json() == {"detail": "the job part is over the 1 MB limit"}
+    assert upload_dir_is_empty(api_settings)

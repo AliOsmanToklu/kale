@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -14,15 +14,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
-from starlette.datastructures import UploadFile
 
 from kale.core import Investigation, ModuleResult, Registry, Scope
 from kale.report import render_investigation_text, render_text
 from kale.server.auth import get_db, require
 from kale.server.config import Settings
 from kale.server.db import utcnow
-from kale.server.errors import Conflict
+from kale.server.errors import Conflict, TooLarge
 from kale.server.jobs import cancel_job, get_job, list_jobs, submit_job
+from kale.server.multipart import InvalidMultipart, MultipartReader
 from kale.server.schemas import (
     ErrorOut,
     JobAccepted,
@@ -39,8 +39,8 @@ from kale.server.tables import JobKind, JobStatus, Role, Token, Upload
 from kale.server.uploads import store_upload
 
 JOB_IN: TypeAdapter[Any] = TypeAdapter(JobIn)
-CHUNK = 64 * 1024
 MB = 1024 * 1024
+JSON_LIMIT = MB  # the JSON body, or the job part of a multipart body
 UNSUPPORTED = "send the job as application/json, or as multipart/form-data with a file"
 
 Reader = Annotated[Token, Depends(require(Role.READER))]
@@ -108,11 +108,6 @@ def _parse_job(raw: str | bytes) -> Any:
         raise _invalid(exc) from None
 
 
-async def _chunks(file: UploadFile) -> AsyncIterator[bytes]:
-    while chunk := await file.read(CHUNK):
-        yield chunk
-
-
 @router.post(
     "/jobs",
     status_code=202,
@@ -134,38 +129,63 @@ async def create_job(request: Request, token: Runner, db: Db, svc: Svc) -> JSONR
     if media_type == "application/json":
         job = submit_job(db, _parse_job(await request.body()), upload=None, now=utcnow(), **common)
     elif media_type == "multipart/form-data":
-        async with request.form(max_files=1, max_fields=1) as form:
-            job_part, file = form.get("job"), form.get("file")
-            if not isinstance(job_part, str) or not isinstance(file, UploadFile):
-                raise RequestValidationError(
-                    [{"loc": (), "msg": "a multipart job needs a 'job' part and a 'file' part"}]
-                )
-            parsed = _parse_job(job_part)
-            upload = await store_upload(
-                db,
-                _chunks(file),
-                original_name=file.filename,
-                directory=svc.settings.upload_dir,
-                limit_bytes=svc.settings.max_upload_mb * MB,
-                now=utcnow(),
-            )
-            job = _submit_with_file(db, parsed, upload, common)
+        job = await _file_job(request, db, svc, common)
     else:
         return JSONResponse({"detail": UNSUPPORTED}, status_code=415)
     body = JobAccepted(id=job.id, status=job.status).model_dump(mode="json")
     return JSONResponse(body, status_code=202, headers={"Location": f"/api/v1/jobs/{job.id}"})
 
 
-def _submit_with_file(db: Session, parsed: Any, upload: Upload, common: dict[str, Any]) -> Any:
-    """Queue a file job; when it is rejected, neither the row nor the file stays."""
-    stored = Path(upload.stored_path)
+def _bad_body(message: str) -> RequestValidationError:
+    return RequestValidationError([{"loc": (), "msg": message}])
+
+
+async def _file_job(request: Request, db: Session, svc: Service, common: dict[str, Any]) -> Any:
+    """Queue a job from a ``job`` part and a ``file`` part, in either order.
+
+    The file streams straight into the quarantine. When anything goes wrong after that,
+    from a broken body to a rejected job, neither the file nor a row stays behind.
+    """
     try:
+        reader = MultipartReader(request.stream(), request.headers["content-type"])
+    except InvalidMultipart as exc:
+        raise _bad_body(str(exc)) from None
+    parsed: Any = None
+    upload: Upload | None = None
+    try:
+        while (part := await reader.next_part()) is not None:
+            if part.name == "job" and parsed is None:
+                text = await reader.read(JSON_LIMIT)
+                if text is None:
+                    raise TooLarge("the job part is over the 1 MB limit")
+                parsed = _parse_job(text)  # before the file, when the job comes first
+            elif part.name == "file" and upload is None:
+                upload = await store_upload(
+                    db,
+                    reader.data(),
+                    original_name=part.filename,
+                    directory=svc.settings.upload_dir,
+                    limit_bytes=svc.settings.max_upload_mb * MB,
+                    now=utcnow(),
+                )
+            else:
+                raise _bad_body(f"unexpected part {part.name!r}: send one 'job' and one 'file'")
+        if parsed is None or upload is None:
+            raise _bad_body("a multipart job needs a 'job' part and a 'file' part")
         return submit_job(db, parsed, upload=upload, now=utcnow(), **common)
+    except InvalidMultipart as exc:
+        _discard(db, upload)
+        raise _bad_body(str(exc)) from None
     except BaseException:
-        db.rollback()
-        with contextlib.suppress(OSError):
-            stored.unlink(missing_ok=True)
+        _discard(db, upload)
         raise
+
+
+def _discard(db: Session, upload: Upload | None) -> None:
+    db.rollback()
+    if upload is not None:
+        with contextlib.suppress(OSError):
+            Path(upload.stored_path).unlink(missing_ok=True)
 
 
 @router.get("/jobs")

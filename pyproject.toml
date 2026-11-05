@@ -100,7 +100,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S108"]
+"tests/**" = ["S101", "S108", "ASYNC240"]  # tests may touch files in async tests
 
 [tool.mypy]
 strict = true

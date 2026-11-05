@@ -1,4 +1,4 @@
-"""The job service: validate and queue jobs, look them up, cancel them.
+"""The job service: validate and queue jobs, claim and finish them, cancel them.
 
 Nothing here knows about HTTP, so the API, the CLI and a web UI share one set of rules.
 Every function takes ``now`` instead of reading the clock.
@@ -7,11 +7,11 @@ Every function takes ``now`` instead of reading the clock.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
-from pydantic import ValidationError
-from sqlalchemy import select, update
+from pydantic import JsonValue, ValidationError
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.orm import Session
 
 from kale.core import (
@@ -185,15 +185,31 @@ def list_jobs(
     return list(db.scalars(query).unique())
 
 
+def _update(db: Session, job_id: str, *conditions: Any, **values: Any) -> bool:
+    """Change one job only if it still matches ``conditions``; ``True`` when it did.
+
+    The condition is checked by the database inside the UPDATE, so of two processes
+    acting on the same job at the same moment exactly one wins. Not committed.
+    """
+    statement = (
+        update(Job)
+        .where(Job.id == job_id, *conditions)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    return cast(CursorResult[Any], db.execute(statement)).rowcount == 1
+
+
 def cancel_job(db: Session, job_id: str, *, now: datetime) -> Job:
     """Cancel a queued job and delete its file. Running modules cannot be stopped safely."""
     job = get_job(db, job_id)
-    cancelled = db.execute(
-        update(Job)
-        .where(Job.id == job_id, Job.status == JobStatus.QUEUED)
-        .values(status=JobStatus.CANCELLED, finished_at=now)
-    )
-    if cancelled.rowcount != 1:  # type: ignore[attr-defined]
+    if not _update(
+        db,
+        job_id,
+        Job.status == JobStatus.QUEUED,
+        status=JobStatus.CANCELLED,
+        finished_at=now,
+    ):
         db.rollback()
         raise Conflict("only queued jobs can be cancelled")
     db.commit()
@@ -201,3 +217,114 @@ def cancel_job(db: Session, job_id: str, *, now: datetime) -> Job:
     if job.upload is not None:
         delete_upload(db, job.upload, now=now)
     return job
+
+
+# How many queued jobs a worker looks at per claim: when another worker takes the
+# oldest one first, the next is tried without a new query.
+CLAIM_BATCH = 5
+
+
+def _claim(db: Session, job_id: str, *, worker_id: str, now: datetime) -> bool:
+    claimed = _update(
+        db,
+        job_id,
+        Job.status == JobStatus.QUEUED,
+        status=JobStatus.RUNNING,
+        worker_id=worker_id,
+        started_at=now,
+        heartbeat_at=now,
+        attempts=Job.attempts + 1,
+    )
+    if claimed:
+        db.commit()
+    else:
+        db.rollback()  # end the write transaction at once: other workers wait for it
+    return claimed
+
+
+def claim_next(db: Session, *, worker_id: str, now: datetime) -> Job | None:
+    """Take the oldest queued job for ``worker_id``, or ``None`` when there is none."""
+    candidates = list(
+        db.scalars(
+            select(Job.id)
+            .where(Job.status == JobStatus.QUEUED)
+            .order_by(Job.created_at, Job.id)
+            .limit(CLAIM_BATCH)
+        )
+    )
+    db.rollback()  # the read must not hold its snapshot while this worker writes
+    for job_id in candidates:
+        if _claim(db, job_id, worker_id=worker_id, now=now):
+            return db.get(Job, job_id, populate_existing=True)
+    return None
+
+
+def heartbeat(db: Session, job_id: str, *, now: datetime) -> None:
+    _update(db, job_id, Job.status == JobStatus.RUNNING, heartbeat_at=now)
+    db.commit()
+
+
+def complete_job(db: Session, job_id: str, result: dict[str, JsonValue], *, now: datetime) -> None:
+    _update(
+        db,
+        job_id,
+        Job.status == JobStatus.RUNNING,
+        status=JobStatus.SUCCEEDED,
+        result=result,
+        error=None,
+        finished_at=now,
+    )
+    db.commit()
+
+
+def fail_job(db: Session, job_id: str, error: str, *, now: datetime) -> None:
+    _update(
+        db,
+        job_id,
+        Job.status == JobStatus.RUNNING,
+        status=JobStatus.FAILED,
+        error=error,
+        finished_at=now,
+    )
+    db.commit()
+
+
+def recover_stale(db: Session, *, now: datetime, stale_seconds: float, max_attempts: int) -> int:
+    """Put back running jobs whose worker stopped sending heartbeats; return how many.
+
+    A job that has already used ``max_attempts`` claims fails instead: a sample that
+    kills the worker process must not loop forever. Its file is deleted with it.
+    """
+    cutoff = now - timedelta(seconds=stale_seconds)
+    stale = Job.status == JobStatus.RUNNING, Job.heartbeat_at < cutoff
+    rows = db.execute(select(Job.id, Job.attempts, Job.upload_id).where(*stale)).all()
+    db.rollback()
+    recovered = 0
+    for job_id, attempts, upload_id in rows:
+        if attempts >= max_attempts:
+            changed = _update(
+                db,
+                job_id,
+                *stale,
+                status=JobStatus.FAILED,
+                error=f"worker stopped {attempts} times while running this job",
+                finished_at=now,
+            )
+        else:
+            changed = _update(
+                db,
+                job_id,
+                *stale,
+                status=JobStatus.QUEUED,
+                worker_id=None,
+                started_at=None,
+                heartbeat_at=None,
+            )
+        db.commit()
+        if not changed:
+            continue
+        recovered += 1
+        upload = db.get(Upload, upload_id) if upload_id and attempts >= max_attempts else None
+        if upload is not None:
+            delete_upload(db, upload, now=now)
+    return recovered

@@ -43,8 +43,10 @@ class _Refused(Exception):
 
 
 def run(args: argparse.Namespace) -> int:
-    if not args.debug:
+    if not args.debug and args.command in ("serve", "worker"):
+        # Long-running: show warnings and the audit log, but not Alembic's start-up chatter.
         logging.getLogger().setLevel(logging.INFO)
+        logging.getLogger("alembic").setLevel(logging.WARNING)
     try:
         settings = Settings()
     except ValidationError as exc:

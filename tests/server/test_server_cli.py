@@ -150,3 +150,23 @@ def test_other_import_errors_are_not_hidden(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(server_cli, "run", broken)
     with pytest.raises(ImportError, match="cannot import name"):
         main(["serve"])
+
+
+def test_only_serve_and_worker_log_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    import logging
+
+    root, alembic = logging.getLogger(), logging.getLogger("alembic")
+    monkeypatch.setattr(root, "level", logging.CRITICAL)
+    monkeypatch.setattr(alembic, "level", logging.NOTSET)
+    assert main(["db", "upgrade"]) == 0
+    assert main(["token", "list"]) == 0
+    assert root.level == logging.CRITICAL
+
+    async def run_forever(self: Worker, stop: asyncio.Event) -> None:
+        return None
+
+    monkeypatch.setattr(Worker, "run_forever", run_forever)
+    monkeypatch.setattr("kale.server.cli.install_signal_handlers", lambda stop: None)
+    assert main(["worker"]) == 0
+    assert root.level == logging.INFO
+    assert alembic.level == logging.WARNING

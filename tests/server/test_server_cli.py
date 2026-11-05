@@ -170,3 +170,27 @@ def test_only_serve_and_worker_log_progress(monkeypatch: pytest.MonkeyPatch) -> 
     assert main(["worker"]) == 0
     assert root.level == logging.INFO
     assert alembic.level == logging.WARNING
+
+
+def test_serve_and_worker_logs_carry_timestamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    import logging
+
+    formats: dict[str, str] = {}
+
+    def record(**kwargs: Any) -> None:
+        formats[current] = kwargs["format"]
+
+    monkeypatch.setattr(logging, "basicConfig", record)
+
+    async def run_forever(self: Worker, stop: asyncio.Event) -> None:
+        return None
+
+    monkeypatch.setattr(Worker, "run_forever", run_forever)
+    monkeypatch.setattr("kale.server.cli.install_signal_handlers", lambda stop: None)
+    monkeypatch.setattr(logging.getLogger(), "level", logging.CRITICAL)
+    current = "db"
+    main(["db", "upgrade"])
+    current = "worker"
+    main(["worker"])
+    assert "%(asctime)s" in formats["worker"]  # an audit line needs its time
+    assert "%(asctime)s" not in formats["db"]

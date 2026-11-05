@@ -447,10 +447,10 @@ def _safe_streams() -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     _safe_streams()
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.CRITICAL,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    log_format = "%(levelname)s %(name)s: %(message)s"
+    if args.command in ("serve", "worker"):  # long-running, with an audit log: add the time
+        log_format = "%(asctime)s " + log_format
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.CRITICAL, format=log_format)
     try:
         if args.command == "schema":
             model = Investigation if args.investigation else ModuleResult

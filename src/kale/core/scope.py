@@ -38,19 +38,43 @@ class Scope:
         domains: set[str] = set()
         networks: list[IPNetwork] = []
         for raw in entries:
-            entry = raw.split("#", 1)[0].strip()
-            if not entry:
-                continue
-            try:
-                networks.append(ipaddress.ip_network(entry, strict=False))
-                continue
-            except ValueError:
-                pass
-            try:
-                domains.add(normalize_hostname(entry.removeprefix("*.")))
-            except ValueError:
-                raise InvalidInputError(f"invalid scope entry: {raw.strip()!r}") from None
+            entry = _parse_entry(raw)
+            if isinstance(entry, str):
+                domains.add(entry)
+            elif entry is not None:
+                networks.append(entry)
         return cls(frozenset(domains), tuple(networks), allow_private)
+
+    def covers(self, entry: str) -> bool:
+        """Whether the scope entry ``entry`` lies entirely inside this scope."""
+        parsed = _parse_entry(entry)
+        if parsed is None:
+            raise InvalidInputError(f"invalid scope entry: {entry.strip()!r}")
+        if isinstance(parsed, str):
+            return any(parsed == d or parsed.endswith("." + d) for d in self.domains)
+        return any(_subnet_of(parsed, network) for network in self.networks)
+
+    def narrow(self, entries: Iterable[str], *, allow_private: bool = False) -> Scope:
+        """The scope ``entries`` describe, which must not reach outside this one.
+
+        Every entry this scope does not cover is listed in a single error, and private
+        addresses can only be requested when this scope allows them.
+        """
+        requested = list(entries)
+        wider = [
+            raw.split("#", 1)[0].strip()
+            for raw in requested
+            if _parse_entry(raw) is not None and not self.covers(raw)
+        ]
+        if wider:
+            raise InvalidInputError(f"not covered by the server scope: {', '.join(wider)}")
+        if allow_private and not self.allow_private:
+            raise InvalidInputError("private addresses are not allowed by the server")
+        return Scope.parse(requested, allow_private=allow_private)
+
+    def entries(self) -> list[str]:
+        """The scope as entries ``parse`` reads back: domains sorted, then networks."""
+        return [*sorted(self.domains), *(str(network) for network in self.networks)]
 
     @property
     def empty(self) -> bool:
@@ -71,6 +95,29 @@ class Scope:
         if any(host in network for network in self.networks):
             return
         raise OutOfScopeError(f"{host} is not in the authorized scope")
+
+
+def _parse_entry(raw: str) -> str | IPNetwork | None:
+    """A hostname or a network for one scope line, or ``None`` for a blank or comment line."""
+    entry = raw.split("#", 1)[0].strip()
+    if not entry:
+        return None
+    try:
+        return ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        pass
+    try:
+        return normalize_hostname(entry.removeprefix("*."))
+    except ValueError:
+        raise InvalidInputError(f"invalid scope entry: {raw.strip()!r}") from None
+
+
+def _subnet_of(inner: IPNetwork, outer: IPNetwork) -> bool:
+    if isinstance(inner, ipaddress.IPv4Network) and isinstance(outer, ipaddress.IPv4Network):
+        return inner.subnet_of(outer)
+    if isinstance(inner, ipaddress.IPv6Network) and isinstance(outer, ipaddress.IPv6Network):
+        return inner.subnet_of(outer)
+    return False
 
 
 def _network_host(target: Observable) -> str | IPAddress:

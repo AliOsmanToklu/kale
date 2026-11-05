@@ -1,4 +1,5 @@
-"""``kale`` command line: ``modules``, ``run``, ``investigate`` and ``schema``.
+"""``kale`` command line: ``modules``, ``run``, ``investigate`` and ``schema``, plus the
+service commands ``serve``, ``worker``, ``token`` and ``db`` (``server`` extra).
 
 Exit codes: 0 done, 1 a finding reached ``--fail-on``, 2 usage error, 3 the module (or, for
 ``investigate``, every module) failed.
@@ -8,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import io
 import json
 import logging
@@ -47,6 +49,22 @@ EXIT_OK = 0
 EXIT_FINDINGS = 1
 EXIT_USAGE = 2
 EXIT_MODULE_ERROR = 3
+
+SERVER_COMMANDS = frozenset({"serve", "worker", "token", "db"})
+# Import errors naming one of these mean the server extra is missing, nothing else.
+SERVER_DEPENDENCIES = frozenset(
+    {
+        "alembic",
+        "fastapi",
+        "multipart",
+        "pydantic_settings",
+        "python_multipart",
+        "sqlalchemy",
+        "starlette",
+        "uvicorn",
+    }
+)
+MISSING_EXTRA = 'the server extra is not installed: pip install "kale[server]"'
 
 LANGUAGES = ("en", "tr")
 # When a module accepts several kinds, a raw target is tried in this order. SOFTWARE is
@@ -93,6 +111,57 @@ def _add_shared(parser: argparse.ArgumentParser) -> None:
         default=env_lang if env_lang in LANGUAGES else "en",
         help="language of module texts, where the module supports it (default: KALE_LANG or en)",
     )
+
+
+def _add_server_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """The service's commands. Declared here so they exist without the server extra."""
+    p_serve = sub.add_parser(
+        "serve",
+        help="serve the HTTP API (server extra)",
+        description=(
+            "Serve the job API. It binds to 127.0.0.1 by default: put a TLS reverse proxy in "
+            "front before exposing it."
+        ),
+    )
+    p_serve.add_argument("--host", default="127.0.0.1", help="address to bind (default: 127.0.0.1)")
+    p_serve.add_argument("--port", type=int, default=8000, help="port to bind (default: 8000)")
+
+    sub.add_parser(
+        "worker",
+        help="run queued API jobs until stopped (server extra)",
+        description="Claim queued jobs and run them. Ctrl+C lets the current job finish.",
+    )
+
+    p_token = sub.add_parser("token", help="create, list or revoke API tokens (server extra)")
+    tokens = p_token.add_subparsers(dest="subcommand", required=True)
+    p_create = tokens.add_parser("create", help="create a token and print it once")
+    p_create.add_argument("--name", required=True, help="a unique name, e.g. ci")
+    p_create.add_argument(
+        "--role",
+        required=True,
+        choices=["reader", "runner"],
+        help="reader: read jobs and modules; runner: also submit and cancel jobs",
+    )
+    tokens.add_parser("list", help="list tokens (never their values)")
+    p_revoke = tokens.add_parser("revoke", help="revoke a token at once")
+    p_revoke.add_argument("name", help="name of the token")
+
+    p_db = sub.add_parser("db", help="manage the service database (server extra)")
+    database = p_db.add_subparsers(dest="subcommand", required=True)
+    database.add_parser("upgrade", help="create the database or migrate it to the latest schema")
+
+
+def _run_server_command(args: argparse.Namespace) -> int:
+    try:
+        server_cli = importlib.import_module("kale.server.cli")
+        code: int = server_cli.run(args)
+    except ImportError as exc:
+        name = exc.name or ""
+        if name != "kale.server.cli" and name.split(".")[0] not in SERVER_DEPENDENCIES:
+            raise
+        print(f"kale: error: {MISSING_EXTRA}", file=sys.stderr)
+        return EXIT_USAGE
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -161,6 +230,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="module option, e.g. vuln.intel.max_findings=3 (repeatable)",
     )
     _add_shared(p_inv)
+
+    _add_server_commands(sub)
 
     p_schema = sub.add_parser("schema", help="print the JSON schema of results")
     p_schema.add_argument(
@@ -376,15 +447,17 @@ def _safe_streams() -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     _safe_streams()
     args = build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.CRITICAL,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    log_format = "%(levelname)s %(name)s: %(message)s"
+    if args.command in ("serve", "worker"):  # long-running, with an audit log: add the time
+        log_format = "%(asctime)s " + log_format
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.CRITICAL, format=log_format)
     try:
         if args.command == "schema":
             model = Investigation if args.investigation else ModuleResult
             print(json.dumps(model.model_json_schema(), indent=2))
             return EXIT_OK
+        if args.command in SERVER_COMMANDS:
+            return _run_server_command(args)
         registry = Registry.discover()
         if args.command == "modules":
             return cmd_modules(registry, args.name)

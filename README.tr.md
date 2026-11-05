@@ -229,7 +229,9 @@ göndererek kapsamı daraltabilir, asla genişletemez: sunucu kapsamında `shop.
 varken `example.com` isteyen iş reddedilir. Her worker, iş başlarken işin kapsamını kapsam
 dosyasıyla yeniden kesiştirir; böylece dosyadan çıkarılan bir hedefe, değişiklikten önce
 kuyruğa alınmış işler bile dokunmaz. `kale serve` dosyayı başlarken okur: hedef ekledikten
-sonra yeniden başlatın. Kapsam dosyası eksik veya geçersizse iki komut da başlamaz.
+sonra yeniden başlatın. Kapsam dosyası eksik veya geçersizse iki komut da başlamaz. Özel
+IP adresleri için hem sunucuda `KALE_ALLOW_PRIVATE=true` hem de işte `"allow_private": true`
+gerekir.
 
 **Yüklemeler.** Dosya alan modüller (`logs.auth`, `malware.static`) dosyayı multipart bir
 istekle alır. Dosya `KALE_UPLOAD_DIR` içinde (0700 izinli bir dizin) rastgele bir adla

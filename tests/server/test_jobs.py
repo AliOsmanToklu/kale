@@ -110,7 +110,10 @@ def test_without_scope_the_server_scope_is_used(
     job = submit(db, registry, settings, token)
     assert job.scope == {"entries": ["example.com", "8.8.8.0/24"], "allow_private": False}
     private = Scope.parse(["10.0.0.0/8"], allow_private=True)
+    # Private addresses are only reached when the request asks, as with --allow-private.
     job = submit(db, registry, settings, token, server_scope=private)
+    assert job.scope == {"entries": ["10.0.0.0/8"], "allow_private": False}
+    job = submit(db, registry, settings, token, server_scope=private, allow_private=True)
     assert job.scope == {"entries": ["10.0.0.0/8"], "allow_private": True}
     job = submit(db, registry, settings, token, server_scope=None)
     assert job.scope == {"entries": [], "allow_private": False}

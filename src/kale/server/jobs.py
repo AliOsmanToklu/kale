@@ -75,7 +75,7 @@ def _scope(request: RunJobIn | InvestigateJobIn, server: Scope | None) -> dict[s
     if request.scope is None:
         if server is None:
             return {"entries": [], "allow_private": False}
-        return {"entries": server.entries(), "allow_private": server.allow_private}
+        return {"entries": server.entries(), "allow_private": request.allow_private}
     try:
         narrowed = (server or Scope()).narrow(request.scope, allow_private=request.allow_private)
     except InvalidInputError as exc:

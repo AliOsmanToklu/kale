@@ -227,7 +227,8 @@ to widen it: with `shop.example.com` in the server scope, a job asking for `exam
 refused. Each worker intersects a job's scope with the scope file again when the job
 starts, so a target removed from the file is not touched even by jobs queued before the
 change. `kale serve` reads the file when it starts: restart it after adding a target. A
-scope file that is missing or invalid stops both commands from starting.
+scope file that is missing or invalid stops both commands from starting. Private addresses
+need both `KALE_ALLOW_PRIVATE=true` on the server and `"allow_private": true` in the job.
 
 **Uploads.** Modules that take a file (`logs.auth`, `malware.static`) receive it in a
 multipart request. The file is stored under a random name in `KALE_UPLOAD_DIR` (a 0700

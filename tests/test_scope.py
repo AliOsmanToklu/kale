@@ -87,3 +87,42 @@ def test_scope_covers_only_network_targets() -> None:
 def test_url_with_invalid_hostname_is_invalid_input() -> None:
     with pytest.raises(InvalidInputError, match="hostname"):
         Scope.parse(["example.com"]).check(obs(Kind.URL, "https://bad..host/"))
+
+
+SERVER = Scope.parse(["example.com", "8.8.8.0/24"])
+
+
+def test_covers_subdomains_and_subnets() -> None:
+    assert SERVER.covers("shop.example.com") and SERVER.covers("*.example.com")
+    assert SERVER.covers("example.com") and SERVER.covers("8.8.8.128/25")
+    assert not SERVER.covers("evilexample.com")
+    assert not SERVER.covers("8.8.0.0/16")
+    assert not SERVER.covers("2001:4860::/32")
+
+
+def test_covers_rejects_garbage() -> None:
+    with pytest.raises(InvalidInputError, match="invalid scope entry"):
+        SERVER.covers("not a domain!")
+
+
+def test_narrow_lists_every_wider_entry() -> None:
+    with pytest.raises(
+        InvalidInputError, match=r"not covered by the server scope: example\.com, other\.org"
+    ):
+        Scope.parse(["shop.example.com"]).narrow(["example.com", "other.org", "shop.example.com"])
+
+
+def test_narrow_returns_the_requested_scope() -> None:
+    assert SERVER.narrow(["shop.example.com"]).domains == {"shop.example.com"}
+
+
+def test_private_needs_server_permission() -> None:
+    with pytest.raises(InvalidInputError, match="private addresses"):
+        Scope.parse(["10.0.0.0/8"]).narrow(["10.1.0.0/16"], allow_private=True)
+    allowed = Scope.parse(["10.0.0.0/8"], allow_private=True)
+    assert allowed.narrow(["10.1.0.0/16"], allow_private=True).allow_private
+
+
+def test_entries_round_trip() -> None:
+    assert SERVER.entries() == ["example.com", "8.8.8.0/24"]
+    assert Scope.parse(SERVER.entries()) == SERVER

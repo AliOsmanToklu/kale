@@ -41,6 +41,9 @@ log = logging.getLogger(__name__)
 
 # Waits after a database error: 1, 2, 4 ... seconds, at most this long.
 MAX_BACKOFF = 30.0
+# Audit statuses of a run that did not finish its job (see Worker._process).
+INTERRUPTED = "interrupted"
+LOST = "lost"
 
 
 class _JobFailed(Exception):
@@ -105,20 +108,30 @@ class Worker:
 
     async def _process(self, db: Session, job: Job) -> None:
         started = time.monotonic()
-        status = JobStatus.FAILED
+        # "interrupted" until the job is finished here, "lost" when another worker took it
+        # over meanwhile: in both cases the job and its file are left as they are.
+        status = INTERRUPTED
         try:
             result = await self._run(job)
-            complete_job(db, job.id, result.model_dump(mode="json"), now=self.clock())
-            status = JobStatus.SUCCEEDED
+            stored = complete_job(
+                db,
+                job.id,
+                result.model_dump(mode="json"),
+                now=self.clock(),
+                worker_id=self.worker_id,
+            )
+            status = JobStatus.SUCCEEDED if stored else LOST
         except _JobFailed as exc:
-            self._fail(db, job, str(exc))
+            status = self._fail(db, job, str(exc))
         except TimeoutError:
-            self._fail(db, job, f"timed out after {self.settings.job_timeout:g} s")
+            status = self._fail(db, job, f"timed out after {self.settings.job_timeout:g} s")
         except Exception as exc:
             log.exception("job %s failed", job.id)
-            self._fail(db, job, f"{type(exc).__name__}: {exc}")
+            status = self._fail(db, job, f"{type(exc).__name__}: {exc}")
         finally:
-            if job.upload is not None:
+            if status == LOST:
+                log.warning("job %s was taken over by another worker; dropping this run", job.id)
+            if job.upload is not None and status in (JobStatus.SUCCEEDED, JobStatus.FAILED):
                 delete_upload(db, job.upload, now=self.clock())
             audit.info(
                 "job finished id=%s status=%s duration=%.1fs",
@@ -127,9 +140,10 @@ class Worker:
                 time.monotonic() - started,
             )
 
-    def _fail(self, db: Session, job: Job, error: str) -> None:
+    def _fail(self, db: Session, job: Job, error: str) -> str:
         db.rollback()
-        fail_job(db, job.id, error, now=self.clock())
+        failed = fail_job(db, job.id, error, now=self.clock(), worker_id=self.worker_id)
+        return JobStatus.FAILED if failed else LOST
 
     async def _run(self, job: Job) -> ModuleResult | Investigation:
         try:
@@ -148,8 +162,8 @@ class Worker:
                 return await self._execute(job, target, scope)
         finally:
             beating.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await beating
+            # Never let the heartbeat's own outcome replace the job's.
+            await asyncio.gather(beating, return_exceptions=True)
 
     def _scope(self, job: Job, server: Scope | None) -> Scope | None:
         """The stored scope, keeping only what the current server scope still covers."""
@@ -192,11 +206,14 @@ class Worker:
     async def _heartbeat(self, job_id: str) -> None:
         while True:
             await asyncio.sleep(self.settings.heartbeat_seconds)
-            await asyncio.to_thread(self._beat, job_id)
+            try:
+                await asyncio.to_thread(self._beat, job_id)
+            except Exception as exc:  # a busy or lost database: try again next time
+                log.warning("job %s: heartbeat failed, retrying: %s", job_id, exc)
 
     def _beat(self, job_id: str) -> None:
         with self.session_factory() as db:
-            heartbeat(db, job_id, now=self.clock())
+            heartbeat(db, job_id, now=self.clock(), worker_id=self.worker_id)
 
 
 def install_signal_handlers(stop: asyncio.Event) -> None:

@@ -447,3 +447,86 @@ async def test_signals_set_the_stop_event(monkeypatch: pytest.MonkeyPatch) -> No
     assert set(on_loop) == {signal.SIGINT, signal.SIGTERM}
     on_loop[signal.SIGINT]()
     assert other.is_set()
+
+
+async def test_a_failed_heartbeat_does_not_fail_the_job(
+    submit: Submit,
+    fast: Settings,
+    modules: Registry,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from kale.server import jobs
+
+    real = jobs.heartbeat
+    calls = 0
+
+    def flaky(db: Session, job_id: str, **kwargs: Any) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError("UPDATE jobs", {}, Exception("database is locked"))
+        return real(db, job_id, **kwargs)
+
+    monkeypatch.setattr("kale.server.worker.heartbeat", flaky)
+    job = submit(module="fake.sleeper", options={"seconds": "0.3"})
+    with caplog.at_level(logging.WARNING, logger="kale.server.worker"):
+        await make_worker(fast, modules, session_factory).run_once()
+    done = fetch(session_factory, job.id)
+    assert done.status is JobStatus.SUCCEEDED
+    assert done.result is not None
+    assert calls > 1  # it kept beating after the error
+    assert done.heartbeat_at is not None and done.started_at is not None
+    assert done.heartbeat_at > done.started_at
+    assert "heartbeat failed" in caplog.text
+
+
+class Usurped:
+    """While it runs, another worker takes its job over (as after a stale heartbeat)."""
+
+    spec: ClassVar[ModuleSpec] = make_spec("fake.usurped", accepts=frozenset({Kind.FILE}))
+    session_factory: ClassVar[sessionmaker[Session] | None] = None
+
+    async def run(self, target: Observable, ctx: RunContext) -> ModuleOutput:
+        assert self.session_factory is not None
+        with self.session_factory() as db:
+            job = db.query(Job).filter(Job.status == JobStatus.RUNNING).one()
+            job.worker_id = "other:2"
+            db.commit()
+        return ModuleOutput(summary={"stale": True})
+
+
+async def test_a_worker_that_lost_its_job_leaves_it_alone(
+    db: Session,
+    submit: Submit,
+    fast: Settings,
+    modules: Registry,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    Usurped.session_factory = session_factory
+    usurping = Registry([*modules.modules, Usurped()])
+    stored = await store_upload(
+        db, chunks(b"x"), original_name="a", directory=fast.upload_dir, limit_bytes=10, now=utcnow()
+    )
+    job = submit_job(
+        db,
+        JOB_IN.validate_python(
+            {"kind": "run", "module": "fake.usurped", "target": {"kind": "file"}}
+        ),
+        registry=usurping,
+        server_scope=None,
+        settings=fast,
+        token=db.query(Token).one(),
+        upload=stored,
+        now=utcnow(),
+    )
+    with caplog.at_level(logging.INFO):
+        await make_worker(fast, usurping, session_factory).run_once()
+    done = fetch(session_factory, job.id)
+    assert done.status is JobStatus.RUNNING  # still the other worker's
+    assert done.worker_id == "other:2"
+    assert done.result is None
+    assert Path(stored.stored_path).exists()  # the other worker still needs it
+    assert f"job finished id={job.id} status=lost" in caplog.text

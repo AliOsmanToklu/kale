@@ -180,3 +180,21 @@ def test_complete_and_fail(db: Session) -> None:
     failed = get_job(db, second.id)
     assert (failed.status, failed.finished_at, failed.result) == (JobStatus.FAILED, done, None)
     assert failed.error == "timed out after 0.2 s"
+
+
+def test_only_the_claiming_worker_can_finish_a_job(db: Session) -> None:
+    queue(db, 1)
+    job = claim_next(db, worker_id="a", now=T)
+    assert job is not None
+    stale = T + timedelta(minutes=5)
+    assert recover_stale(db, now=stale, stale_seconds=120, max_attempts=3) == 1
+    again = claim_next(db, worker_id="b", now=stale)
+    assert again is not None and again.id == job.id
+
+    assert not heartbeat(db, job.id, now=stale, worker_id="a")
+    assert not complete_job(db, job.id, {"late": True}, now=stale, worker_id="a")
+    assert not fail_job(db, job.id, "timed out", now=stale, worker_id="a")
+    db.expire_all()
+    current = get_job(db, job.id)
+    assert (current.status, current.worker_id, current.result) == (JobStatus.RUNNING, "b", None)
+    assert complete_job(db, job.id, {"ok": True}, now=stale, worker_id="b")

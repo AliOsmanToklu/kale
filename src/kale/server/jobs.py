@@ -259,34 +259,59 @@ def claim_next(db: Session, *, worker_id: str, now: datetime) -> Job | None:
     return None
 
 
-def heartbeat(db: Session, job_id: str, *, now: datetime) -> None:
-    _update(db, job_id, Job.status == JobStatus.RUNNING, heartbeat_at=now)
+def _running(worker_id: str | None) -> tuple[Any, ...]:
+    """Conditions for touching a running job; with ``worker_id``, only that worker's.
+
+    A worker whose heartbeat went stale may still be running a job another worker has
+    recovered and claimed since; it must not overwrite that worker's job.
+    """
+    running = Job.status == JobStatus.RUNNING
+    return (running,) if worker_id is None else (running, Job.worker_id == worker_id)
+
+
+def heartbeat(db: Session, job_id: str, *, now: datetime, worker_id: str | None = None) -> bool:
+    """Refresh a running job's heartbeat; ``False`` when it is no longer running (here)."""
+    changed = _update(db, job_id, *_running(worker_id), heartbeat_at=now)
     db.commit()
+    return changed
 
 
-def complete_job(db: Session, job_id: str, result: dict[str, JsonValue], *, now: datetime) -> None:
-    _update(
+def complete_job(
+    db: Session,
+    job_id: str,
+    result: dict[str, JsonValue],
+    *,
+    now: datetime,
+    worker_id: str | None = None,
+) -> bool:
+    """Store the result; ``False`` when the job is no longer running (here)."""
+    changed = _update(
         db,
         job_id,
-        Job.status == JobStatus.RUNNING,
+        *_running(worker_id),
         status=JobStatus.SUCCEEDED,
         result=result,
         error=None,
         finished_at=now,
     )
     db.commit()
+    return changed
 
 
-def fail_job(db: Session, job_id: str, error: str, *, now: datetime) -> None:
-    _update(
+def fail_job(
+    db: Session, job_id: str, error: str, *, now: datetime, worker_id: str | None = None
+) -> bool:
+    """Fail the job with ``error``; ``False`` when it is no longer running (here)."""
+    changed = _update(
         db,
         job_id,
-        Job.status == JobStatus.RUNNING,
+        *_running(worker_id),
         status=JobStatus.FAILED,
         error=error,
         finished_at=now,
     )
     db.commit()
+    return changed
 
 
 def recover_stale(db: Session, *, now: datetime, stale_seconds: float, max_attempts: int) -> int:
